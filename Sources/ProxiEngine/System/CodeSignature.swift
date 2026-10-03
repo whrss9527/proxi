@@ -36,6 +36,37 @@ enum CodeSignature {
         return SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSCheckAllArchitectures), requirement) == errSecSuccess
     }
 
+    /// 签名的 cdhash（十六进制）；没有签名或读不出来时是 nil。ad-hoc 签名的程序靠它认出是不是同一份。
+    static func cdhash(of url: URL) -> String? {
+        guard let code = staticCode(url) else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let values = info as? [String: Any],
+              let hash = values[kSecCodeInfoUnique as String] as? Data, !hash.isEmpty else {
+            return nil
+        }
+        return hash.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 本机套接字连接的对方进程（按连接时内核记下的 audit token 找，不会被换掉的 PID 骗）的签名满足要求。
+    static func peer(_ socket: Int32, satisfies requirementText: String) -> Bool {
+        var token = audit_token_t()
+        var length = socklen_t(MemoryLayout<audit_token_t>.size)
+        // SOL_LOCAL、LOCAL_PEERTOKEN（sys/un.h 里的值，Swift 里没有导出）。
+        guard getsockopt(socket, 0, 0x006, &token, &length) == 0, Int(length) == MemoryLayout<audit_token_t>.size else { return false }
+        let tokenData = withUnsafeBytes(of: &token) { Data($0) }
+        var code: SecCode?
+        guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributeAudit as String: tokenData] as CFDictionary, [], &code) == errSecSuccess,
+              let code else {
+            return false
+        }
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(requirementText as CFString, [], &requirement) == errSecSuccess, let requirement else {
+            return false
+        }
+        return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
+    }
+
     private static func staticCode(_ url: URL) -> SecStaticCode? {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess else { return nil }

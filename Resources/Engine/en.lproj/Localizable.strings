@@ -822,6 +822,10 @@
 "内核在运行" = "The core is running";
 "，IP 转发已打开" = ", IP forwarding is on";
 "proxi helper：" = "proxi helper: ";
+"内核配置里有不能以 root 运行的设置：%@" = "The core configuration has settings that can't run as root: %@";
+"读不懂内核配置" = "Couldn't read the core configuration";
+"代理引擎没有签名，不能安装特权助手" = "The engine isn't code-signed, so the privileged helper can't be installed";
+"特权助手的版本不对，请重新安装助手" = "The privileged helper is the wrong version. Please reinstall it";
 
 /* System/ProxyTester.swift */
 "测速地址格式不对" = "Invalid test URL";
