@@ -248,7 +248,6 @@ struct SettingsRootView: View {
             SettingsSidebar(items: SidebarItem.all(extensionEnabled: state.persisted.extensionState.enabled), selection: sidebarSelection) { item in
                 Label(item.title, systemImage: item.symbol)
             }
-            .frame(minWidth: AppLanguage.width(170, english: 190), idealWidth: AppLanguage.width(190, english: 215), maxWidth: 260, maxHeight: .infinity)
             .safeAreaInset(edge: .top) {
                 HStack(spacing: 8) {
                     Image(nsImage: NSApp.applicationIconImage)
@@ -262,6 +261,8 @@ struct SettingsRootView: View {
                 .padding(.top, 34)
                 .padding(.bottom, 4)
             }
+            // 限制整个侧栏（含页头）的宽度，否则页头的 Spacer 会撑大分栏。
+            .frame(minWidth: AppLanguage.width(170, english: 190), idealWidth: AppLanguage.width(190, english: 215), maxWidth: 260, maxHeight: .infinity)
             // 使用稳定的窗口底色，避免交叠的两个窗口相互参与毛玻璃采样。
             ZStack {
                 Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
