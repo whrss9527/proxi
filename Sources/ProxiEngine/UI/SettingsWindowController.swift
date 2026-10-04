@@ -252,11 +252,13 @@ struct SettingsRootView: View {
     @ObservedObject var navigation: SettingsNavigation
 
     var body: some View {
-        NavigationSplitView {
+        // NavigationSplitView 会额外创建原生玻璃侧栏，颜色仍随真实窗口焦点变化。
+        // 普通分栏保留拖动宽度，不让系统再包一层侧栏材质。
+        HSplitView {
             SettingsSidebar(items: SidebarItem.all, selection: sidebarSelection) { item in
                 Label(item.title, systemImage: item.symbol)
             }
-            .navigationSplitViewColumnWidth(min: AppLanguage.width(170, english: 190), ideal: AppLanguage.width(190, english: 215), max: 260)
+            .frame(minWidth: AppLanguage.width(170, english: 190), idealWidth: AppLanguage.width(190, english: 215), maxWidth: 260, maxHeight: .infinity)
             .safeAreaInset(edge: .top) {
                 // 和 Proxi 的设置窗口一样的抬头：两边当成同一个窗口。
                 HStack(spacing: 8) {
@@ -271,7 +273,6 @@ struct SettingsRootView: View {
                 .padding(.top, 34)
                 .padding(.bottom, 4)
             }
-        } detail: {
             // 使用稳定的窗口底色，避免交叠的两个窗口相互参与毛玻璃采样。
             ZStack {
                 Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
@@ -280,6 +281,7 @@ struct SettingsRootView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 520)
+        .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         // 两个进程的设置共同组成一个界面；交接焦点时控件不应先变灰再恢复。
         // 仅固定视觉状态，不改变窗口的真实焦点、键盘事件或应用激活权限。
         .environment(\.appearsActive, true)
