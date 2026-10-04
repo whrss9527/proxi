@@ -7,12 +7,16 @@ struct SettingsSidebar<Item: Hashable, Row: View>: View {
     @Binding var selection: Item?
     @ViewBuilder let row: (Item) -> Row
     @State private var hovering: Item?
+    @FocusState private var hasKeyboardFocus: Bool
 
     var body: some View {
         ScrollView {
             VStack(spacing: 2) {
                 ForEach(items, id: \.self) { item in
-                    Button { selection = item } label: {
+                    Button {
+                        hasKeyboardFocus = true
+                        selection = item
+                    } label: {
                         row(item)
                             .font(.system(size: 13))
                             .foregroundStyle(selection == item ? Color.white : Color.primary)
@@ -33,6 +37,8 @@ struct SettingsSidebar<Item: Hashable, Row: View>: View {
             .padding(8)
         }
         .focusable()
+        .focused($hasKeyboardFocus)
+        .focusEffectDisabled()
         .onKeyPress(.upArrow) { moveSelection(-1); return .handled }
         .onKeyPress(.downArrow) { moveSelection(1); return .handled }
         .background(Color(nsColor: .windowBackgroundColor))
