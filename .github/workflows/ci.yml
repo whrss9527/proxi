@@ -421,6 +421,8 @@ jobs:
           screencapture -x screenshots/ext-profiles.png || true
           open -a "$app"; sleep 4
           screencapture -x screenshots/engine-settings.png || true
+          # 验证切换设置期间也不会临时进入 Dock（持续采样，而非只检查最终状态）。
+          swift Scripts/check-settings-dock.swift "$app"
           # 特权助手：装的时候核对内核的校验和，认不出的内核不装；装好以后经它以 root 运行内核（网关模式）。
           printf 'not the core' > "$RUNNER_TEMP/fake-core"; chmod +x "$RUNNER_TEMP/fake-core"
           if sudo "$bin" helper install --uid "$(id -u)" --core "$RUNNER_TEMP/fake-core" > "$RUNNER_TEMP/fake-helper.txt" 2>&1; then
