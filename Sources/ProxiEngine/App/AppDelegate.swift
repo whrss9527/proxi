@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
-        // 在后台运行，不在 Dock 里显示（设置窗口打开期间临时显示）。
+        // 设置窗口打开时也保持后台应用身份，不在 Dock 里显示。
         app.setActivationPolicy(.accessory)
         app.run()
     }

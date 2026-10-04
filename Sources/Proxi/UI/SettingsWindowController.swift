@@ -138,7 +138,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             guard let self, let window = self.window, window.isVisible else { return }
             // 对方已经取得焦点并完成绘制，直接隐藏旧窗口，避免关闭动画露出桌面。
             window.orderOut(nil)
-            SettingsWindowSync.becomeAccessoryAfterHandoff()
         }
     }
 
@@ -153,8 +152,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         if let window, !window.isVisible, let frame = SettingsWindowSync.savedFrame() {
             window.setFrame(frame, display: false)
         }
-        // 设置窗口打开期间当普通应用：菜单栏显示编辑菜单，⌘Tab 能切到它；关闭后回到只有菜单栏图标。
-        NSApp.setActivationPolicy(.regular)
+        // 设置窗口也保持菜单栏应用身份；切页不再向 Dock 添加、移除应用图标。
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         if let window {
