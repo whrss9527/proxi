@@ -5,6 +5,20 @@ import AppKit
 let identifiers = ["com.whrss9527.proxyswitch", "com.whrss9527.proxyswitch.engine"]
 let engineURL = URL(fileURLWithPath: CommandLine.arguments[1])
 var samples = 0
+func visibleSettingsWindows() -> [[String: Any]] {
+    let pids = Set(identifiers.compactMap {
+        NSRunningApplication.runningApplications(withBundleIdentifier: $0).first?.processIdentifier
+    })
+    let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+    return windows.filter { window in
+        guard let pid = window[kCGWindowOwnerPID as String] as? Int32, pids.contains(pid),
+              (window[kCGWindowLayer as String] as? Int) == 0,
+              let bounds = window[kCGWindowBounds as String] as? [String: Any],
+              let width = bounds["Width"] as? Double,
+              let height = bounds["Height"] as? Double else { return false }
+        return width >= 760 && height >= 520
+    }
+}
 func checkPolicies() {
     for identifier in identifiers {
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first else {
@@ -13,6 +27,9 @@ func checkPolicies() {
         guard app.activationPolicy == .accessory else {
             fatalError("设置切换时进入了 Dock：\(identifier)，policy=\(app.activationPolicy.rawValue)")
         }
+    }
+    guard !visibleSettingsWindows().isEmpty else {
+        fatalError("设置交接期间两个窗口都不可见，露出了桌面")
     }
     samples += 1
 }
@@ -38,6 +55,9 @@ func checkForeground(_ identifier: String) {
         return width >= 760 && height >= 520
     }
     guard hasSettingsWindow else { fatalError("目标设置窗口没有显示：\(identifier)") }
+    guard visibleSettingsWindows().count == 1 else {
+        fatalError("交接结束后仍有两个设置窗口可见")
+    }
 }
 checkPolicies()
 for page in ["extensions", "diagnostics", "extensions", "diagnostics"] {
