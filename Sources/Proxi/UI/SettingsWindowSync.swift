@@ -54,6 +54,8 @@ enum SettingsWindowSync {
     /// 还在前台时先把前台交给另一边，等真的让出去了再退。马上退的话系统会把前台交给别的程序（常常是桌面），
     /// 看起来就是闪一下跳到了桌面。
     static func becomeAccessoryAfterHandoff() {
+        // 设置窗口已隐藏，但提示窗口等仍在时保持普通应用身份。
+        guard !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) else { return }
         guard NSApp.isActive else {
             NSApp.setActivationPolicy(.accessory)
             return
