@@ -183,6 +183,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             window.setFrame(frame, display: false)
         }
         // 设置窗口也保持后台应用身份；切页不再向 Dock 添加、移除应用图标。
+        // 先提交隐藏期间累积的页面布局，再把窗口交给 WindowServer。
+        window?.contentView?.layoutSubtreeIfNeeded()
+        window?.displayIfNeeded()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         if let window {
@@ -250,13 +253,9 @@ struct SettingsRootView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(SidebarItem.all, id: \.self, selection: sidebarSelection) { item in
+            SettingsSidebar(items: SidebarItem.all, selection: sidebarSelection) { item in
                 Label(item.title, systemImage: item.symbol)
-                    .tag(item)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .background(Color(nsColor: .windowBackgroundColor))
             .navigationSplitViewColumnWidth(min: AppLanguage.width(170, english: 190), ideal: AppLanguage.width(190, english: 215), max: 260)
             .safeAreaInset(edge: .top) {
                 // 和 Proxi 的设置窗口一样的抬头：两边当成同一个窗口。
@@ -281,6 +280,9 @@ struct SettingsRootView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 520)
+        // 两个进程的设置共同组成一个界面；交接焦点时控件不应先变灰再恢复。
+        // 仅固定视觉状态，不改变窗口的真实焦点、键盘事件或应用激活权限。
+        .environment(\.appearsActive, true)
         // 把配置文件拖进窗口就导入（先预览）。
         .onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
