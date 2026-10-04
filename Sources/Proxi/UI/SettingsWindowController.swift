@@ -122,19 +122,23 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     let navigation = SettingsNavigation()
     private var window: NSWindow?
     private var otherShownObserver: NSObjectProtocol?
-    /// 正在因为代理引擎的设置窗口打开了而关掉这边的。
-    private var handingOff = false
+    private var becameActiveObserver: NSObjectProtocol?
 
     /// 设置窗口正开着。
     var isShowing: Bool { window?.isVisible == true }
 
     override init() {
         super.init()
+        // 窗口先成为 key、应用稍后才激活时，也要完成交接。
+        becameActiveObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: NSApp, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.announceWhenReady() }
+        }
         // 代理引擎的设置窗口显示出来时关掉这边的：两边当成同一个窗口，同一时间只显示一个。
         otherShownObserver = SettingsWindowSync.observeOtherShown { [weak self] in
             guard let self, let window = self.window, window.isVisible else { return }
-            self.handingOff = true
-            window.close()
+            // 对方已经取得焦点并完成绘制，直接隐藏旧窗口，避免关闭动画露出桌面。
+            window.orderOut(nil)
+            SettingsWindowSync.becomeAccessoryAfterHandoff()
         }
     }
 
@@ -151,12 +155,26 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         // 设置窗口打开期间当普通应用：菜单栏显示编辑菜单，⌘Tab 能切到它；关闭后回到只有菜单栏图标。
         NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         if let window {
             SettingsWindowSync.save(window.frame)
         }
-        SettingsWindowSync.announceShown()
+        announceWhenReady()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        announceWhenReady()
+    }
+
+    /// 激活是异步的；仅在窗口真正成为前台窗口且首帧画好后，才让另一边隐藏。
+    private func announceWhenReady() {
+        DispatchQueue.main.async { [weak self] in
+            guard let window = self?.window, window.isVisible, window.isKeyWindow, NSApp.isActive else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            SettingsWindowSync.announceShown()
+        }
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -174,16 +192,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        let handoff = handingOff
-        handingOff = false
         // 别的窗口（后台助手的提示）还开着时留在 Dock 和 ⌘Tab 里，等它也关了再回到只有菜单栏图标。
         let others = NSApp.windows.contains { $0.isVisible && $0 !== notification.object as? NSWindow && $0.styleMask.contains(.titled) }
         if !others {
-            if handoff {
-                SettingsWindowSync.becomeAccessoryAfterHandoff()
-            } else {
-                NSApp.setActivationPolicy(.accessory)
-            }
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 
@@ -199,6 +211,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.setContentSize(NSSize(width: 900, height: 620))
         window.minSize = NSSize(width: 760, height: 520)
         window.center()
+        window.animationBehavior = .none
         window.isReleasedWhenClosed = false
         window.delegate = self
         return window
@@ -232,9 +245,12 @@ struct SettingsRootView: View {
                 .padding(.bottom, 4)
             }
         } detail: {
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(VisualEffectView(material: .underWindowBackground).ignoresSafeArea())
+            // 背景独立于页面分支，切换页面时保留同一个 AppKit 毛玻璃视图。
+            ZStack {
+                VisualEffectView(material: .underWindowBackground).ignoresSafeArea()
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(minWidth: 760, minHeight: 520)
     }
