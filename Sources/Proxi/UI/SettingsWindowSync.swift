@@ -49,6 +49,20 @@ enum SettingsWindowSync {
         DistributedNotificationCenter.default().postNotificationName(notification, object: me, userInfo: nil, deliverImmediately: true)
     }
 
+    // 已运行的 Proxi 直接接收页面请求，避免 Launch Services 重新打开事件重置页面。
+    nonisolated private static let proxiPageRequest = Notification.Name("com.whrss9527.proxyswitch.proxiSettingsPage")
+
+    static func requestProxiPage(_ page: String) {
+        DistributedNotificationCenter.default().postNotificationName(proxiPageRequest, object: page, userInfo: nil, deliverImmediately: true)
+    }
+
+    static func observeProxiPageRequests(_ handler: @escaping @MainActor (String) -> Void) -> NSObjectProtocol {
+        DistributedNotificationCenter.default().addObserver(forName: proxiPageRequest, object: nil, queue: .main) { note in
+            guard let page = note.object as? String else { return }
+            MainActor.assumeIsolated { handler(page) }
+        }
+    }
+
     /// Proxi 这边：请代理引擎打开设置窗口的某一页（代理引擎那边 SettingsPage 的 rawValue）。
     static func requestEnginePage(_ page: String) {
         DistributedNotificationCenter.default().postNotificationName(pageRequest, object: page, userInfo: nil, deliverImmediately: true)

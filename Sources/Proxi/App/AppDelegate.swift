@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusController: StatusItemController?
     private var signalSources: [DispatchSourceSignal] = []
+    private var settingsPageObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandlers()
@@ -40,6 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             CommandLineInstaller.repairIfPossible()
         }
         MainMenu.install()
+        settingsPageObserver = SettingsWindowSync.observeProxiPageRequests { page in
+            guard let page = SettingsPage(rawValue: page) else { return }
+            SettingsWindowController.shared.show(page: page)
+        }
         let state = AppState.shared
         Notifier.shared.start()
         Notifier.shared.onOpen = { route in

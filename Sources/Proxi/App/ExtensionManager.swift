@@ -391,11 +391,12 @@ final class ExtensionManager: ObservableObject {
             // 从这边开着的设置窗口切过去时，不让系统马上把代理引擎切到前台：等它的窗口出来，这边关窗口时把前台交过去
             // （见 SettingsWindowSync.handOffConfiguration）。从菜单、面板打开时照旧让系统切到前台。
             let handOff = NSApp.isActive && SettingsWindowController.shared.isShowing
-            // 已经在运行时启动参数传不过去：先发通知让它切到这一页，再「重新打开」它（显示设置窗口、切到前台）。
-            if let page {
-                SettingsWindowSync.requestEnginePage(page)
+            if !NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleIdentifier).isEmpty {
+                SettingsWindowSync.yieldToOther()
+                SettingsWindowSync.requestEnginePage(page ?? "")
+            } else {
+                launch(showWindow: true, page: page, handOff: handOff)
             }
-            launch(showWindow: true, page: page, handOff: handOff)
         } else {
             SettingsWindowController.shared.show(page: .extensions)
         }

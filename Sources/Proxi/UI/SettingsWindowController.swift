@@ -42,6 +42,22 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
 @MainActor
 final class SettingsNavigation: ObservableObject {
+    // 跨窗口请求发出后保持用户点击的选中项，避免 List 先弹回原页再切到对方。
+    @Published private(set) var requestedSidebarItem: SidebarItem?
+    var sidebarItem: SidebarItem { requestedSidebarItem ?? .proxi(page) }
+
+    func select(_ item: SidebarItem) {
+        switch item {
+        case .proxi(let page):
+            self.page = page
+            requestedSidebarItem = nil
+        default:
+            requestedSidebarItem = item
+        }
+    }
+
+    func didShow() { requestedSidebarItem = nil }
+
     @Published var page: SettingsPage = .profiles
     @Published var selectedProfileID: UUID?
 }
@@ -142,6 +158,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func show(page: SettingsPage?) {
+        navigation.didShow()
         if let page {
             navigation.page = page
         }
@@ -216,7 +233,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-/// 设置窗口的内容：左侧导航，右侧各页；整个窗口透出桌面的毛玻璃。
+/// 设置窗口的内容：左侧导航，右侧各页；跨窗口切换时底色保持稳定。
 struct SettingsRootView: View {
     @ObservedObject var state: AppState
     @ObservedObject var navigation: SettingsNavigation
@@ -228,6 +245,8 @@ struct SettingsRootView: View {
                     .tag(item)
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(Color(nsColor: .windowBackgroundColor))
             .navigationSplitViewColumnWidth(min: AppLanguage.width(170, english: 190), ideal: AppLanguage.width(190, english: 215), max: 260)
             .safeAreaInset(edge: .top) {
                 HStack(spacing: 8) {
@@ -243,9 +262,9 @@ struct SettingsRootView: View {
                 .padding(.bottom, 4)
             }
         } detail: {
-            // 背景独立于页面分支，切换页面时保留同一个 AppKit 毛玻璃视图。
+            // 使用稳定的窗口底色，避免交叠的两个窗口相互参与毛玻璃采样。
             ZStack {
-                VisualEffectView(material: .underWindowBackground).ignoresSafeArea()
+                Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -253,13 +272,14 @@ struct SettingsRootView: View {
         .frame(minWidth: 760, minHeight: 520)
     }
 
-    /// 选中代理引擎的页时切到它的设置窗口（这个窗口随之关掉），选中的仍是这边的页。
+    /// 选中代理引擎的页时切到它的设置窗口（这个窗口随之隐藏），保持用户点击的选中项。
     private var sidebarSelection: Binding<SidebarItem?> {
-        Binding(get: { .proxi(navigation.page) }, set: { item in
+        Binding(get: { navigation.sidebarItem }, set: { item in
+            guard let item else { return }
+            navigation.select(item)
             switch item {
-            case .proxi(let page): navigation.page = page
+            case .proxi: break
             case .engine(let page): state.extensions.showSettings(page: page.rawValue)
-            case nil: break
             }
         })
     }
