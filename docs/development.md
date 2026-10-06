@@ -42,4 +42,4 @@ defaults write com.whrss9527.proxyswitch AppleLanguages -array en   # 删掉这�
 
 本仓库分支开的合并请求（草稿除外）测试全部通过后自动合并进 main。合并后，如果 `CHANGELOG.md` 最上面的版本还没有发布，就自动打包、公证，成功后打上 `v版本号` 的标签并发布 Release；所以要发版时，在 `CHANGELOG.md` 最上面加一节新版本就行（标题写成 `## 0.8.1（2026-09-29）`，写错了会报错）。中途失败的版本不会留下标签，下次合并时再发。测试期间 main 有了新提交时不会自动合并，把 main 合进分支再推一次即可。
 
-本机调试更新流程时可以把环境变量 `PROXI_UPDATE_URL` 指向一个返回 GitHub releases 格式 JSON 的地址；调试 iCloud 同步时可以用 `PROXI_SYNC_DIR` 把同步文件夹指到任意目录（见 `.github/workflows/ci.yml` 里的做法）。
+本机调试更新流程时可以把环境变量 `PROXI_UPDATE_URL` 指向一个返回 GitHub releases 格式 JSON 的地址（这时不去 GitHub 取新版本标签上的 `CHANGELOG.md`，「关于」页只显示这个 JSON 里的发布说明）；调试 iCloud 同步时可以用 `PROXI_SYNC_DIR` 把同步文件夹指到任意目录（见 `.github/workflows/ci.yml` 里的做法）。

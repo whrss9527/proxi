@@ -227,6 +227,67 @@ final class ParsingTests: XCTestCase {
         XCTAssertNil(UpdateChecker.parse(Data("not json".utf8)))
     }
 
+    func testChangelogParse() {
+        let text = """
+        # 更新日志
+
+        ## 0.14.4（2026-10-02）
+
+        - 检查到新版本时列出中间每一版的改动。
+
+        ## 0.14.3 (2026-10-01)
+
+        0.14.2 没有发布。
+
+        - 扩展里的部分文字调整。
+
+        ## 0.14.1
+
+        - 代理配置可以填用户名和密码。
+        ## 说明
+        不是版本号的标题，下面的内容不算进上一版。
+        """
+        let releases = Changelog.parse(text)
+        XCTAssertEqual(releases.map(\.version), ["0.14.4", "0.14.3", "0.14.1"])
+        XCTAssertEqual(releases.map(\.date), ["2026-10-02", "2026-10-01", nil])
+        XCTAssertEqual(releases[0].notes, "- 检查到新版本时列出中间每一版的改动。")
+        XCTAssertEqual(releases[1].notes, "0.14.2 没有发布。\n\n- 扩展里的部分文字调整。")
+        XCTAssertEqual(releases[2].notes, "- 代理配置可以填用户名和密码。")
+        XCTAssertTrue(Changelog.parse("没有版本").isEmpty)
+        XCTAssertNil(Changelog.heading("## 1. future notes"))
+        XCTAssertNil(Changelog.heading("## 0.15.bad"))
+        XCTAssertEqual(Changelog.heading("## 0.16.0-beta.1")?.version, "0.16.0-beta.1")
+    }
+
+    func testChangelogBetweenVersions() {
+        // 文件里的顺序乱了也是新的在前。
+        let all = Changelog.parse("## 0.14.3（2026-10-01）\n- c\n## 0.15.0（2026-10-03）\n- e\n## 0.14.4（2026-10-02）\n- d\n## 0.14.1（2026-10-01）\n- b\n## 0.12.0（2026-09-30）\n- a")
+        XCTAssertEqual(Changelog.releases(all, after: "0.14.1", upTo: "0.14.4").map(\.version), ["0.14.4", "0.14.3"])
+        XCTAssertEqual(Changelog.releases(all, after: "0.12.0", upTo: "0.15.0").map(\.version), ["0.15.0", "0.14.4", "0.14.3", "0.14.1"])
+        // 当前版本没有自己的一节（标签打了但没有发布）也照样算。
+        XCTAssertEqual(Changelog.releases(all, after: "0.14.2", upTo: "0.14.4").map(\.version), ["0.14.4", "0.14.3"])
+        XCTAssertEqual(Changelog.releases(all, after: "0.15.0", upTo: "0.15.0"), [])
+    }
+
+    func testChangelogURL() {
+        XCTAssertEqual(UpdateChecker.changelogURL(tag: "v0.14.4").absoluteString,
+                       "https://api.github.com/repos/whrss9527/proxi/contents/CHANGELOG.md?ref=v0.14.4")
+    }
+
+    /// 仓库里的 CHANGELOG.md 每一节都认得出版本号和日期：检查到新版本时按它列出中间每一版的改动。
+    func testRepositoryChangelogParses() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let text = try String(contentsOf: root.appendingPathComponent("CHANGELOG.md"), encoding: .utf8)
+        let releases = Changelog.parse(text)
+        XCTAssertFalse(releases.isEmpty)
+        XCTAssertEqual(releases.count, text.components(separatedBy: "\n").filter { $0.hasPrefix("## ") }.count)
+        for release in releases {
+            XCTAssertNotNil(release.date, release.version)
+            XCTAssertFalse(release.notes.isEmpty, release.version)
+        }
+        XCTAssertEqual(releases.map(\.version), releases.sorted { UpdateChecker.isNewer($0.version, than: $1.version) }.map(\.version))
+    }
+
     func testChecksums() throws {
         let text = """
         说明行

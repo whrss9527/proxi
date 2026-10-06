@@ -108,22 +108,52 @@ enum UpdateChecker {
     }
 
     private static func latest(via route: NetworkRoute) async throws -> ReleaseInfo {
+        let data = try await fetch(apiURL, accept: "application/vnd.github+json", via: route)
+        guard let release = parse(data) else { throw UpdateError.badResponse }
+        return release
+    }
+
+    /// 新版本标签上的 CHANGELOG.md。走 api.github.com 的接口，不用 raw.githubusercontent.com：有些网络连不上后者。
+    static func changelogURL(tag: String) -> URL {
+        var components = URLComponents(string: "https://api.github.com/repos/\(AppInfo.repository)/contents/CHANGELOG.md")!
+        components.queryItems = [URLQueryItem(name: "ref", value: tag)]
+        return components.url!
+    }
+
+    /// 比 current 新、不比 release 新的每一版的更新记录，新的在前；依次经各条线路取，第一个成功的为准。
+    /// 测试时（设了 PROXI_UPDATE_URL）不联网，返回空，界面上显示新版本的发布说明。
+    static func changes(since current: String, upTo release: ReleaseInfo, routes: [NetworkRoute] = [.system]) async throws -> [Changelog.Release] {
+        guard ProcessInfo.processInfo.environment[overrideVariable] == nil else { return [] }
+        let url = changelogURL(tag: release.tag)
+        var lastError: Error = UpdateError.badResponse
+        for route in routes {
+            do {
+                let data = try await fetch(url, accept: "application/vnd.github.raw", via: route)
+                return Changelog.releases(Changelog.parse(String(decoding: data, as: UTF8.self)), after: current, upTo: release.version)
+            } catch {
+                Log.info("经\(route.title)取 \(release.tag) 的更新记录失败：\(error.localizedDescription)")
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    private static func fetch(_ url: URL, accept: String, via route: NetworkRoute) async throws -> Data {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 15
         configuration.timeoutIntervalForResource = 30
         route.apply(to: configuration)
         let session = URLSession(configuration: configuration)
         defer { session.finishTasksAndInvalidate() }
-        var request = URLRequest(url: apiURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        var request = URLRequest(url: url)
+        request.setValue(accept, forHTTPHeaderField: "Accept")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.cachePolicy = .reloadIgnoringLocalCacheData
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw UpdateError.server(http.statusCode)
         }
-        guard let release = parse(data) else { throw UpdateError.badResponse }
-        return release
+        return data
     }
 
     /// 解析 GitHub releases 接口返回的 JSON；压缩包优先选本机架构的精简包。
