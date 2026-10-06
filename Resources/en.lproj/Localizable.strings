@@ -119,7 +119,7 @@
 "PAC 脚本" = "PAC Script";
 "环境变量" = "Environment Variables";
 "浏览器和大多数软件都走它" = "Browsers and most apps use it";
-"http_proxy、https_proxy、all_proxy、no_proxy：之后新开的终端和程序生效" = "http_proxy, https_proxy, all_proxy, no_proxy: Terminal windows and apps opened afterwards use them";
+"只对之后新启动的程序生效；已运行的终端 App 新开窗口也不算，须重开整个 App 或复制命令。sudo 默认清除环境变量，sudo -E 可尝试保留（须符合 sudo 策略）。" = "Only newly launched apps inherit these variables. A new window in an already running terminal app still uses its old environment: restart the whole app or copy the terminal command. sudo normally resets the environment; sudo -E requests preservation, subject to sudo policy.";
 "git clone、pull 等（全局 http.proxy）" = "git clone, pull, etc. (global http.proxy)";
 "写入用户目录的 .npmrc（npm、pnpm 和 yarn 1 都读它）" = "Written to .npmrc in your home folder (read by npm, pnpm and yarn 1)";
 "新配置" = "New Profile";
@@ -448,7 +448,7 @@
 "清除所有代理设置" = "Clear All Proxy Settings";
 "环境变量（launchd）" = "Environment Variables (launchd)";
 "未设置" = "Not set";
-"新打开的终端和程序会读到这些变量；已经打开的终端请用面板里的「复制终端命令」。" = "Newly opened terminals and apps read these variables; for terminals that are already open, use “Copy Terminal Command” in the panel.";
+"这些变量只对之后新启动的程序生效。Terminal、iTerm、VS Code 已运行时，新开窗口或标签页也继承旧环境：请重开整个 App，或用面板里的「复制终端命令」。sudo 默认清除环境变量，sudo -E 可尝试保留（须符合 sudo 策略）。" = "Only newly launched apps inherit these variables. If Terminal, iTerm, or VS Code is already running, new windows and tabs still inherit its old environment: restart the whole app or use Copy Terminal Command. sudo normally resets the environment; sudo -E requests preservation, subject to sudo policy.";
 "git 与 npm" = "git & npm";
 "文件" = "Files";
 "配置目录" = "Configuration Folder";

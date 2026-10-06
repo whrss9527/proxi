@@ -563,7 +563,7 @@ struct DiagnosticsPage: View {
                     ForEach(EnvironmentProxy.names, id: \.self) { name in
                         LabeledContent(name, value: environment[name]?.isEmpty == false ? environment[name]! : L("未设置"))
                     }
-                    Text(L("新打开的终端和程序会读到这些变量；已经打开的终端请用面板里的「复制终端命令」。"))
+                    Text(L("这些变量只对之后新启动的程序生效。Terminal、iTerm、VS Code 已运行时，新开窗口或标签页也继承旧环境：请重开整个 App，或用面板里的「复制终端命令」。sudo 默认清除环境变量，sudo -E 可尝试保留（须符合 sudo 策略）。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

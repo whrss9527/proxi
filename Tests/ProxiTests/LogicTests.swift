@@ -131,12 +131,28 @@ final class NpmProxyTests: XCTestCase {
 }
 
 final class TerminalCommandsTests: XCTestCase {
+    func testEmptyBypassListClearsBothCasesInTheCurrentShell() async throws {
+        XCTAssertNil(EnvironmentProxy.noProxyValue(" \n"))
+        let command = TerminalCommands.export(proxyURL: "http://localhost:8888", noProxy: " \n")
+        let script = "export no_proxy=old NO_PROXY=old; " + command + "; printf '%s|%s|%s' \"${no_proxy-unset}\" \"${NO_PROXY-unset}\" \"$http_proxy\""
+        let result = try await Shell.run("/bin/bash", ["-c", script])
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.output, "unset|unset|http://localhost:8888")
+        XCTAssertFalse(command.contains(Profile.defaultNoProxy))
+    }
+
+    func testBypassWhitespaceIsNormalizedInBothCommandFormats() {
+        XCTAssertEqual(EnvironmentProxy.noProxyValue(" localhost,127.0.0.1 \n"), "localhost,127.0.0.1")
+        XCTAssertTrue(TerminalCommands.export(proxyURL: "http://localhost:8888", noProxy: " localhost ").contains("no_proxy='localhost'"))
+        XCTAssertTrue(TerminalCommands.fish(proxyURL: "http://localhost:8888", noProxy: " localhost ").contains("set -gx NO_PROXY 'localhost'"))
+    }
+
     func testExportAndFish() {
         let export = TerminalCommands.export(proxyURL: "http://127.0.0.1:8888", noProxy: "it's")
         XCTAssertTrue(export.hasPrefix("export http_proxy='http://127.0.0.1:8888' https_proxy='http://127.0.0.1:8888' all_proxy='http://127.0.0.1:8888' no_proxy='it'\\''s' HTTP_PROXY="))
         let fish = TerminalCommands.fish(proxyURL: "socks5://127.0.0.1:1080", noProxy: "")
         XCTAssertTrue(fish.hasPrefix("set -gx http_proxy 'socks5://127.0.0.1:1080'; set -gx HTTP_PROXY 'socks5://127.0.0.1:1080'; "))
-        XCTAssertTrue(fish.contains("set -gx no_proxy '\(Profile.defaultNoProxy)'"))
+        XCTAssertTrue(fish.hasSuffix("set -e no_proxy; set -e NO_PROXY"))
     }
 
     func testCopyWithPasswordIsConcealed() {

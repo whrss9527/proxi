@@ -38,7 +38,7 @@ enum ProxyTarget: String, Codable, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .system: return L("浏览器和大多数软件都走它")
-        case .environment: return L("http_proxy、https_proxy、all_proxy、no_proxy：之后新开的终端和程序生效")
+        case .environment: return L("只对之后新启动的程序生效；已运行的终端 App 新开窗口也不算，须重开整个 App 或复制命令。sudo 默认清除环境变量，sudo -E 可尝试保留（须符合 sudo 策略）。")
         case .git: return L("git clone、pull 等（全局 http.proxy）")
         case .npm: return L("写入用户目录的 .npmrc（npm、pnpm 和 yarn 1 都读它）")
         }
