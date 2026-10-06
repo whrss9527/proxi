@@ -1,0 +1,12 @@
+[
+  { "name": "P0", "color": "b60205", "description": "最急：崩溃、数据丢失、挡住发版" },
+  { "name": "P1", "color": "d93f0b", "description": "重要，尽快做" },
+  { "name": "P2", "color": "fbca04", "description": "一般" },
+  { "name": "P3", "color": "c5def5", "description": "有空再做" },
+  { "name": "agent", "color": "1d76db", "description": "目标和验收标准写清楚了，Agent 可以直接做" },
+  { "name": "me", "color": "5319e7", "description": "只能由本人做" },
+  { "name": "doing", "color": "0e8a16", "description": "有人在做，评论里写着是谁" },
+  { "name": "blocked", "color": "000000", "description": "卡住了，评论里写着卡在哪" },
+  { "name": "bug", "color": "d73a4a", "description": "出问题了" },
+  { "name": "enhancement", "color": "a2eeef", "description": "新功能或改进" }
+]

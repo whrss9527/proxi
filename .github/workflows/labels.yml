@@ -1,0 +1,27 @@
+name: labels
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/labels.json]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 按 .github/labels.json 创建或更新标签（不删除已有标签）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -c '.[]' .github/labels.json | while read -r label; do
+            gh label create "$(jq -r .name <<<"$label")" \
+              --color "$(jq -r .color <<<"$label")" \
+              --description "$(jq -r .description <<<"$label")" \
+              --repo "$GITHUB_REPOSITORY" --force
+          done
