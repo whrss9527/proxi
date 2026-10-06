@@ -267,6 +267,7 @@ final class AppState: ObservableObject {
                     }
                 }
                 persisted.enabledByUs = false
+                persisted.appliedTargets = []
                 persisted.original = nil
                 persisted.lastProfileID = config.profiles.first { !$0.engine }?.id
                 savePersisted()

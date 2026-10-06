@@ -111,6 +111,20 @@ final class AppliedTargetsTests: XCTestCase {
         XCTAssertFalse(state.persisted.enabledByUs)
     }
 
+    @MainActor
+    func testExplicitEmptyOwnershipDoesNotReuseLegacyEnabledFlag() {
+        let backend = Backend()
+        var profile = Profile(name: "公司代理", color: "#2563eb", host: "proxy.corp.example", port: 3128)
+        profile.targets = [.system]
+        var config = AppConfig()
+        config.profiles = [profile]
+        var persisted = PersistedState()
+        persisted.enabledByUs = true
+        persisted.appliedTargets = []
+        let state = AppState(config: config, persisted: persisted, backend: backend, persists: false)
+        XCTAssertFalse(state.status.isOn)
+    }
+
     func testAppliedTargetsDecodeOldAndFutureRecords() throws {
         let decoder = JSONDecoder()
         let old = try decoder.decode(PersistedState.self, from: Data(#"{"enabledByUs":true}"#.utf8))
