@@ -54,7 +54,7 @@ Proxi 以前叫 ProxySwitch，0.11.0 起改名。在旧版本里一键更新就�
   - **终端环境变量**：`http_proxy`、`https_proxy`、`all_proxy`、`no_proxy`（大小写两种）写到 launchd（`launchctl setenv`），之后新开的终端和程序都能读到；已经打开的终端用面板里复制的 `export` 命令（zsh / bash 或 fish）。要登录的代理，复制的命令里带着密码，剪贴板上会加上 `org.nspasteboard.ConcealedType` 标记，剪贴板历史工具不会把它存下来；也可以在同一个菜单里复制不带密码的。launchd 的设置重启后就没了，Proxi 启动时代理开着的话会重新设好。
   - **git**：全局的 `http.proxy` 和 `https.proxy`。带密码的地址不经命令行：写进只有自己能读的 `~/Library/Application Support/Proxi/git-proxy.inc`，`~/.gitconfig` 里用 `include.path` 引用它，关闭时一起删掉。
   - **npm / pnpm / yarn**：写进 `~/.npmrc` 的 `proxy`、`https-proxy`、`noproxy`（pnpm 和 yarn 1 也读它）；里面有密码时文件权限改成只有自己能读。
-- **关闭代理**：上面设置过的地方全部清掉；系统代理可以选直接连接或者恢复开启前的设置，开启时设过、后来没在用的网络服务（比如拔掉的网线）也一起改回来。
+- **关闭代理**：上面设置过的地方全部清掉；系统代理可以选直接连接或者恢复开启前的设置，开启时设过、后来没在用的网络服务（比如拔掉的网线）也一起改回来。其他程序改了系统代理时，Proxi 仍记着自己实际写过的范围，面板会提示；关闭会清理这些范围，失败的保留供重试。
 - **测试连接**：经代理实际访问测试地址（默认 `https://www.apple.com/library/test/success.html`，可以换成你内网里的地址）测出延迟；PAC 由系统执行，和浏览器一致。开启期间定期检查代理服务器的端口，连不上时提醒。
 - **自动检测**：找出本机正在监听的代理端口（Charles 的 8888、Proxyman 的 9090、mitmproxy 的 8080 这类），确认能用后一键添加。
 - **全局快捷键**：默认 ⌃⌥P 开关代理，可以在设置里录制新的（至少带 ⌃ 或 ⌘，F1~F20 可以单独用；被别的程序占用时设置里会提示）。

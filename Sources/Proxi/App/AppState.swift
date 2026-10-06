@@ -388,7 +388,18 @@ final class AppState: ObservableObject {
 
     // MARK: - 状态
 
+    /// 旧版本只有开启标记，首次操作时按当时的配置补齐范围。
+    private var appliedTargets: [ProxyTarget] {
+        persisted.appliedTargets ?? ProxyTarget.allCases.filter { persisted.enabledByUs && selectedProfile?.targets.contains($0) == true }
+    }
+
+    var systemProxyChangedExternally: Bool {
+        guard appliedTargets.contains(.system), let profile = selectedProfile else { return false }
+        return !snapshot.matches(profile)
+    }
+
     var status: ProxyStatus {
+        if !appliedTargets.isEmpty, let profile = selectedProfile { return .on(profile) }
         if snapshot.isActive {
             if let profile = matchingProfile() {
                 return .on(profile)
@@ -476,7 +487,7 @@ final class AppState: ObservableObject {
             if case .on(let current) = status { return current }
             return persisted.enabledByUs ? selectedProfile : nil
         }()
-        if persisted.original == nil || (old == nil && !status.isOn) {
+        if persisted.original == nil || (old == nil && appliedTargets.isEmpty && !status.isOn) {
             persisted.original = snapshot
         }
         let mode = config.offMode
@@ -492,8 +503,8 @@ final class AppState: ObservableObject {
                 }
             }
             // 上一个配置设置过、新配置没有的项先清掉。
-            if let previous {
-                for target in previous.targets where !profile.targets.contains(target) {
+            if previous != nil {
+                for target in appliedTargets where !profile.targets.contains(target) {
                     if let error = await clear(target: target, mode: mode) {
                         failures.append(L("%@（清除）：%@", target.title, error))
                     }
@@ -505,7 +516,7 @@ final class AppState: ObservableObject {
                 }
             }
             persisted.lastProfileID = profile.id
-            persisted.enabledByUs = failures.count < profile.targets.count
+            persisted.enabledByUs = !appliedTargets.isEmpty
             // 用户重新开启了代理：上次退出时没清理完的不用再清（这次开启已经重新设过了）。
             persisted.pendingCleanup = nil
             savePersisted()
@@ -521,23 +532,30 @@ final class AppState: ObservableObject {
         let mode = config.offMode
         Task {
             var failures: [String] = []
-            switch current {
-            case .external:
-                if let error = await clear(target: .system, mode: .direct) {
-                    failures.append(L("系统代理：%@", error))
-                }
-            case .on(let profile):
-                for target in ProxyTarget.allCases where profile.targets.contains(target) {
-                    if let error = await clear(target: target, mode: mode) {
-                        failures.append(L("%@：%@", target.title, error))
-                    }
-                }
-            case .off:
-                break
+            let owned = appliedTargets
+            let targets: [ProxyTarget]
+            if !owned.isEmpty {
+                targets = owned
+            } else if case .on(let profile) = current {
+                targets = ProxyTarget.allCases.filter { profile.targets.contains($0) }
+            } else if case .external = current {
+                targets = [.system]
+            } else {
+                targets = []
             }
-            persisted.enabledByUs = false
-            persisted.original = nil
-            persisted.pendingCleanup = nil
+            var remaining: [ProxyTarget] = []
+            for target in ProxyTarget.allCases where targets.contains(target) {
+                if let error = await clear(target: target, mode: owned.isEmpty && !current.isOn ? .direct : mode) {
+                    remaining.append(target)
+                    failures.append(L("%@：%@", target.title, error))
+                }
+            }
+            persisted.appliedTargets = remaining
+            persisted.enabledByUs = !remaining.isEmpty
+            if remaining.isEmpty {
+                persisted.original = nil
+                persisted.pendingCleanup = nil
+            }
             savePersisted()
             finish(action: L("关闭代理"), failures: failures, successText: mode == .restore ? L("已恢复开启前的设置") : L("已改为直接连接"))
         }
@@ -601,6 +619,9 @@ final class AppState: ObservableObject {
             case .npm:
                 try backend.setNpm(proxyURL: url, noProxy: profile.noProxy)
             }
+            var targets = appliedTargets
+            if !targets.contains(target) { targets.append(target) }
+            persisted.appliedTargets = targets
             return nil
         } catch {
             return Redact.secrets(error.localizedDescription)
@@ -626,6 +647,7 @@ final class AppState: ObservableObject {
             case .npm:
                 try backend.clearNpm()
             }
+            persisted.appliedTargets = appliedTargets.filter { $0 != target }
             return nil
         } catch {
             return error.localizedDescription
@@ -807,10 +829,11 @@ final class AppState: ObservableObject {
         }
         // 各项都清理好了才记下代理已经关了；没清理完的（管理员密码没输完、出错、超时）记下来，下次启动时接着清理，
         // 开启前的设置也留着，到时候还能恢复。
-        let targets = ProxyTarget.allCases.filter { profile.targets.contains($0) }
+        let targets = ProxyTarget.allCases.filter { (appliedTargets.isEmpty ? profile.targets.contains($0) : appliedTargets.contains($0)) }
         let failures = ExitCleanup.run(targets, systemProxy: offDesired(mode: config.offMode), services: persisted.systemServices,
                                        backend: backend, timeout: exitCleanupTimeout)
         let remaining = targets.filter { failures[$0] != nil }
+        persisted.appliedTargets = remaining
         if remaining.isEmpty {
             // 不然只设了终端、git、npm 的配置下次打开时还显示开着，下次开启时也会把这时的设置当成「开启前的设置」。
             persisted.enabledByUs = false

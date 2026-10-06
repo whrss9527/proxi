@@ -593,3 +593,5 @@
 
 /* System/ProxyBackend.swift */
 "%@ 秒内没有做完" = "Didn't finish within %@ seconds";
+
+"配置开着，系统代理被别的程序改了" = "Configuration is on; another app changed the system proxy";
