@@ -100,6 +100,7 @@ struct PanelView: View {
     private var subtitle: String {
         switch state.status {
         case .on(let profile):
+            if state.systemProxyChangedExternally { return L("配置开着，系统代理被别的程序改了") }
             if state.health == .down { return L("代理服务器连不上") }
             if let result = state.testResults[profile.id], result.ok, let latency = result.latencyMs {
                 return "\(profile.summary) · \(latency) ms"
