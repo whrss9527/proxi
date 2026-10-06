@@ -23,6 +23,21 @@ struct PanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             statusCard
+            if state.status.isOn || !state.targetFailures.isEmpty {
+                VStack(spacing: 4) {
+                    ForEach(ProxyTarget.allCases) { target in
+                        HStack {
+                            Text(target.title)
+                            Spacer()
+                            Text((state.targetStatuses[target] ?? .notApplied).title)
+                                .foregroundStyle(state.targetStatuses[target] == .applied ? Color.green : Color.secondary)
+                        }
+                        .font(.system(size: 11))
+                    }
+                }
+                .padding(10)
+                .glassCard()
+            }
             if case .external = state.status {
                 externalCard
             }
@@ -91,7 +106,7 @@ struct PanelView: View {
 
     private var title: String {
         switch state.status {
-        case .on(let profile): return L("已开启 · %@", profile.name)
+        case .on(let profile): return state.isPartiallyApplied ? L("部分开启 · %@", profile.name) : L("已开启 · %@", profile.name)
         case .external: return L("系统代理由其他程序设置")
         case .off(let next): return next == nil ? L("还没有代理配置") : L("代理已关闭")
         }

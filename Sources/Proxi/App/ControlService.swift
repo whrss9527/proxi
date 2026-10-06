@@ -199,13 +199,13 @@ final class ControlService: ObservableObject {
 
     // MARK: - 小工具
 
-    private func status(_ state: AppState) -> [String: Any] {
+    func status(_ state: AppState) -> [String: Any] {
         var proxy: [String: Any] = [:]
         let text: String
         switch state.status {
         case .on(let profile):
             proxy = ["state": "on", "profile": profile.name, "summary": profile.summary, "targets": profile.targets.map(\.rawValue).sorted()]
-            text = L("代理已开启：%@", profile.name)
+            text = state.isPartiallyApplied ? L("代理部分开启：%@", profile.name) : L("代理已开启：%@", profile.name)
         case .off(let next):
             proxy = ["state": "off", "next": next?.name ?? ""]
             text = L("代理已关闭") + (next.map { L("（下次开启「%@」）", $0.name) } ?? "")
@@ -213,6 +213,9 @@ final class ControlService: ObservableObject {
             proxy = ["state": "external", "summary": summary]
             text = L("系统代理由别的程序设置：%@", summary)
         }
+        proxy["appliedTargets"] = state.appliedTargets.map(\.rawValue).sorted()
+        proxy["targetStates"] = Dictionary(uniqueKeysWithValues: state.targetStatuses.map { ($0.key.rawValue, $0.value.rawValue) })
+        proxy["systemProxyChangedExternally"] = state.systemProxyChangedExternally
         var result: [String: Any] = ["text": text, "proxy": proxy, "systemProxy": state.snapshot.summary, "version": UpdateChecker.currentVersion]
         switch state.health {
         case .ok: result["health"] = "ok"
