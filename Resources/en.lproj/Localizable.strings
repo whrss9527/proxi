@@ -539,6 +539,7 @@
 "还没有检查过更新" = "Haven't checked for updates yet";
 "上次检查：%@" = "Last checked: %@";
 "发布于 %@" = "Released %@";
+"这次更新包含 %@ 个版本的改动" = "This update includes changes from %@ versions";
 "到发布页下载" = "Download from Release Page";
 "跳过这个版本" = "Skip This Version";
 "在浏览器里查看发布页" = "View the Release Page in a Browser";

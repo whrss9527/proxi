@@ -199,13 +199,24 @@ struct UpdateSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if !release.notes.isEmpty {
-                ReleaseNotes(text: release.notes)
-                    .lineLimit(12)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+            if updater.changes.count > 1 {
+                Text(L("这次更新包含 %@ 个版本的改动", updater.changes.count))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            // 列出中间每一版的更新记录；取不到时只显示新版本的发布说明。
+            if !updater.changes.isEmpty || !release.notes.isEmpty {
+                Group {
+                    if updater.changes.isEmpty {
+                        ReleaseNotes(text: release.notes)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        ChangelogNotes(releases: updater.changes)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
             }
             let problem = updater.installProblem ?? (release.canInstall ? nil : UpdateError.noArchive.localizedDescription)
             if let problem {
@@ -313,6 +324,33 @@ struct UpdateSection: View {
         formatter.timeStyle = .none
         return formatter
     }()
+}
+
+/// 从当前版本到新版本之间每一版的更新记录：版本号和日期，下面是这一版的改动。
+struct ChangelogNotes: View {
+    var releases: [Changelog.Release]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(releases, id: \.version) { release in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(release.version)
+                            .font(.system(size: 12, weight: .semibold))
+                        if let date = release.date {
+                            Text(date)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if !release.notes.isEmpty {
+                        ReleaseNotes(text: release.notes)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// 发布说明：GitHub 的 Markdown 简单渲染，列表项换成圆点。
