@@ -1,0 +1,23 @@
+name: 问题反馈 / Bug report
+description: 用的时候出了问题 / Something isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么 / What happened
+      description: 一两句话就行，有截图更好 / A sentence or two is enough; screenshots help
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 怎么复现 / Steps to reproduce
+      placeholder: |
+        1.
+        2.
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: App 版本和 macOS 版本 / App and macOS version
