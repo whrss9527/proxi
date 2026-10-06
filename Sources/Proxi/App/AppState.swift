@@ -21,6 +21,19 @@ enum ProxyStatus: Equatable {
     }
 }
 
+enum ProxyTargetStatus: String {
+    case notApplied, applied, failed, changedExternally
+
+    var title: String {
+        switch self {
+        case .notApplied: return L("未开启")
+        case .applied: return L("已开启")
+        case .failed: return L("操作失败")
+        case .changedExternally: return L("被其他程序改动")
+        }
+    }
+}
+
 enum Health: Equatable {
     case unknown
     case ok
@@ -34,6 +47,7 @@ final class AppState: ObservableObject {
 
     @Published var config: AppConfig
     @Published private(set) var persisted: PersistedState
+    @Published private(set) var targetFailures: [ProxyTarget: String] = [:]
     @Published private(set) var snapshot: ProxySnapshot
     @Published private(set) var health: Health = .unknown
     @Published private(set) var busy = false
@@ -390,13 +404,29 @@ final class AppState: ObservableObject {
     // MARK: - 状态
 
     /// 旧版本只有开启标记，首次操作时按当时的配置补齐范围。
-    private var appliedTargets: [ProxyTarget] {
+    var appliedTargets: [ProxyTarget] {
         persisted.appliedTargets ?? ProxyTarget.allCases.filter { persisted.enabledByUs && selectedProfile?.targets.contains($0) == true }
     }
 
     var systemProxyChangedExternally: Bool {
         guard appliedTargets.contains(.system), let profile = selectedProfile else { return false }
         return !snapshot.matches(profile)
+    }
+
+    var targetStatuses: [ProxyTarget: ProxyTargetStatus] {
+        Dictionary(uniqueKeysWithValues: ProxyTarget.allCases.map { target in
+            let status: ProxyTargetStatus
+            if targetFailures[target] != nil { status = .failed }
+            else if appliedTargets.contains(target) {
+                status = target == .system && systemProxyChangedExternally ? .changedExternally : .applied
+            } else { status = .notApplied }
+            return (target, status)
+        })
+    }
+
+    var isPartiallyApplied: Bool {
+        guard case .on(let profile) = status else { return false }
+        return !targetFailures.isEmpty || profile.targets.contains { targetStatuses[$0] != .applied }
     }
 
     var status: ProxyStatus {
@@ -484,6 +514,7 @@ final class AppState: ObservableObject {
         }
         busy = true
         lastError = nil
+        targetFailures = [:]
         let previous: Profile? = old ?? {
             if case .on(let current) = status { return current }
             return persisted.enabledByUs ? selectedProfile : nil
@@ -529,6 +560,7 @@ final class AppState: ObservableObject {
     func turnOff(clearing removed: Profile? = nil) {
         guard !busy else { return }
         busy = true
+        targetFailures = [:]
         let current = removed.map { ProxyStatus.on($0) } ?? status
         let mode = config.offMode
         Task {
@@ -567,6 +599,7 @@ final class AppState: ObservableObject {
     func clearAllProxySettings() async {
         guard !busy else { return }
         busy = true
+        targetFailures = [:]
         var failures: [String] = []
         for target in ProxyTarget.allCases {
             if let error = await clear(target: target, mode: .direct) {
@@ -625,9 +658,12 @@ final class AppState: ObservableObject {
             var targets = appliedTargets
             if !targets.contains(target) { targets.append(target) }
             persisted.appliedTargets = targets
+            targetFailures[target] = nil
             return nil
         } catch {
-            return Redact.secrets(error.localizedDescription)
+            let message = Redact.secrets(error.localizedDescription)
+            targetFailures[target] = message
+            return message
         }
     }
 
@@ -651,9 +687,12 @@ final class AppState: ObservableObject {
                 try backend.clearNpm()
             }
             persisted.appliedTargets = appliedTargets.filter { $0 != target }
+            targetFailures[target] = nil
             return nil
         } catch {
-            return error.localizedDescription
+            let message = Redact.secrets(error.localizedDescription)
+            targetFailures[target] = message
+            return message
         }
     }
 
@@ -860,6 +899,7 @@ final class AppState: ObservableObject {
     func resumePendingCleanup() async {
         guard let pending = persisted.pendingCleanup, !busy else { return }
         busy = true
+        targetFailures = [:]
         persisted.appliedTargets = pending.targets
         Log.info("接着清理上次退出时没清理完的「\(pending.profileName)」：\(pending.targets.map(\.rawValue).joined(separator: "、"))")
         var remaining: [ProxyTarget] = []

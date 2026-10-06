@@ -31,6 +31,8 @@ proxi call use_profile '{"profile":"公司代理"}'   # 直接调用某个工具
 
 加 `--json` 输出完整的 JSON。退出码：0 成功，1 出错，2 用法不对，3 权限不够。
 
+`status --json` 的 `proxy.targets` 是配置要求开启的范围，`proxy.appliedTargets` 是 Proxi 成功写入、关闭时需要清理的范围。`proxy.targetStates` 分别报告 `system`、`environment`、`git`、`npm` 的状态：`notApplied`、`applied`、`failed` 或 `changedExternally`。开启某个范围失败时，其他成功的范围仍会保留并可以关闭；查看 `lastError` 可了解本次操作的失败原因。
+
 ## AI 助手（MCP）
 
 支持 MCP 的 AI 客户端（Claude Desktop、Claude Code、Cursor 等）加上下面的配置，就能让 AI 查看代理状态、开关代理、切换配置和测试连接：

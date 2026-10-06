@@ -7,21 +7,32 @@ final class AppliedTargetsTests: XCTestCase {
         var calls: [ProxyTarget] = []
         var desired: DesiredProxy?
         var failing: Set<ProxyTarget> = []
+        var cancelledSystem = false
         func currentSystemProxy() -> ProxySnapshot { snapshot }
         func applySystemProxy(_ desired: DesiredProxy, also services: [String]) async throws -> [String] {
             calls.append(.system)
             self.desired = desired
+            if cancelledSystem { throw CancellationError() }
             if failing.contains(.system) { throw SystemProxyError.command("失败") }
             return services
         }
-        func setEnvironment(proxyURL: String, noProxy: String) async throws { calls.append(.environment) }
+        func setEnvironment(proxyURL: String, noProxy: String) async throws {
+            calls.append(.environment)
+            if failing.contains(.environment) { throw SystemProxyError.command("失败") }
+        }
         func clearEnvironment() async throws { calls.append(.environment) }
-        func setGit(proxyURL: String) async throws { calls.append(.git) }
+        func setGit(proxyURL: String) async throws {
+            calls.append(.git)
+            if failing.contains(.git) { throw SystemProxyError.command("失败") }
+        }
         func clearGit() async throws {
             calls.append(.git)
             if failing.contains(.git) { throw SystemProxyError.command("失败") }
         }
-        func setNpm(proxyURL: String, noProxy: String) throws { calls.append(.npm) }
+        func setNpm(proxyURL: String, noProxy: String) throws {
+            calls.append(.npm)
+            if failing.contains(.npm) { throw SystemProxyError.command("失败") }
+        }
         func clearNpm() throws { calls.append(.npm) }
     }
 
@@ -123,6 +134,66 @@ final class AppliedTargetsTests: XCTestCase {
         persisted.appliedTargets = []
         let state = AppState(config: config, persisted: persisted, backend: backend, persists: false)
         XCTAssertFalse(state.status.isOn)
+    }
+
+    @MainActor
+    private func offState(_ backend: Backend) -> AppState {
+        let profile = Profile(name: "公司代理", color: "#2563eb", host: "proxy.corp.example", port: 3128, targets: [.system, .environment, .git, .npm])
+        var config = AppConfig()
+        config.profiles = [profile]
+        config.notifyLevel = .none
+        config.healthCheck = false
+        return AppState(config: config, persisted: PersistedState(), backend: backend, persists: false)
+    }
+
+    @MainActor
+    func testSystemFailureLeavesOtherRangesVisibleAndClearable() async throws {
+        let backend = Backend()
+        backend.failing = [.system]
+        let state = offState(backend)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false)
+        try await waitForOperation(state)
+        XCTAssertTrue(state.status.isOn)
+        XCTAssertTrue(state.isPartiallyApplied)
+        XCTAssertEqual(state.targetStatuses[.system], .failed)
+        XCTAssertEqual(state.targetStatuses[.git], .applied)
+        XCTAssertEqual(Set(state.appliedTargets), [.environment, .git, .npm])
+        let proxy = try XCTUnwrap(ControlService().status(state)["proxy"] as? [String: Any])
+        XCTAssertEqual(proxy["appliedTargets"] as? [String], ["environment", "git", "npm"])
+        XCTAssertEqual((proxy["targetStates"] as? [String: String])?["system"], "failed")
+        backend.calls = []
+        state.turnOff()
+        try await waitForOperation(state)
+        XCTAssertEqual(Set(backend.calls), [.environment, .git, .npm])
+        XCTAssertFalse(state.status.isOn)
+    }
+
+    @MainActor
+    func testAllFailuresDoNotClaimSuccess() async throws {
+        let backend = Backend()
+        backend.failing = Set(ProxyTarget.allCases)
+        let state = offState(backend)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false)
+        try await waitForOperation(state)
+        XCTAssertFalse(state.status.isOn)
+        XCTAssertEqual(state.appliedTargets, [])
+        XCTAssertTrue(state.targetStatuses.values.allSatisfy { $0 == .failed })
+        XCTAssertNotNil(state.lastError)
+    }
+
+    @MainActor
+    func testCancelledAuthorizationStillTracksSuccessfulOtherRanges() async throws {
+        let backend = Backend()
+        backend.cancelledSystem = true
+        let state = offState(backend)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false)
+        try await waitForOperation(state)
+        XCTAssertTrue(state.status.isOn)
+        XCTAssertEqual(state.targetStatuses[.system], .failed)
+        XCTAssertEqual(Set(state.appliedTargets), [.environment, .git, .npm])
+        state.turnOff()
+        try await waitForOperation(state)
+        XCTAssertFalse(state.persisted.enabledByUs)
     }
 
     func testAppliedTargetsDecodeOldAndFutureRecords() throws {

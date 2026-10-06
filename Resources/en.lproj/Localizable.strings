@@ -595,3 +595,13 @@
 "%@ 秒内没有做完" = "Didn't finish within %@ seconds";
 
 "配置开着，系统代理被别的程序改了" = "Configuration is on; another app changed the system proxy";
+
+"已开启" = "On";
+
+"操作失败" = "Operation failed";
+
+"被其他程序改动" = "Changed by another app";
+
+"代理部分开启：%@" = "Proxy partly on: %@";
+
+"部分开启 · %@" = "Partly on · %@";
