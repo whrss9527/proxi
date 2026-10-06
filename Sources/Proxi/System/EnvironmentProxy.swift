@@ -1,22 +1,27 @@
 import Foundation
 
 /// 环境变量 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY 写到用户的 launchd 环境（launchctl setenv），
-/// 之后由 launchd 启动的程序（新打开的终端、图形程序）都能看到；已经打开的终端需要重开，或者用复制的终端命令。
+/// 只影响之后由 launchd 新启动的程序；已运行的终端 App 新开标签页或窗口仍继承旧环境，须重开整个 App 或粘贴终端命令。
 /// 大小写两种都设置：curl 等只认小写的 http_proxy。
 enum EnvironmentProxy {
     static let launchctlPath = "/bin/launchctl"
     static let names = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]
 
+    /// 空值表示不设置绕过列表，终端复制命令和 launchd 使用同一语义。
+    static func noProxyValue(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     static func set(proxyURL: String, noProxy: String) async throws {
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
             try await setenv(name, proxyURL)
         }
-        let trimmed = noProxy.trimmingCharacters(in: .whitespaces)
         for name in ["NO_PROXY", "no_proxy"] {
-            if trimmed.isEmpty {
-                try await unsetenv(name)
+            if let value = noProxyValue(noProxy) {
+                try await setenv(name, value)
             } else {
-                try await setenv(name, trimmed)
+                try await unsetenv(name)
             }
         }
     }

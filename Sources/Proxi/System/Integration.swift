@@ -169,18 +169,20 @@ enum TerminalCommands {
 
     /// zsh / bash 的 export 命令，大小写两种都设置。
     static func export(proxyURL: String, noProxy: String) -> String {
-        let noProxyValue = noProxy.isEmpty ? Profile.defaultNoProxy : noProxy
-        let pairs = [("http_proxy", proxyURL), ("https_proxy", proxyURL), ("all_proxy", proxyURL), ("no_proxy", noProxyValue)]
+        let noProxyValue = EnvironmentProxy.noProxyValue(noProxy)
+        var pairs = [("http_proxy", proxyURL), ("https_proxy", proxyURL), ("all_proxy", proxyURL)]
+        if let noProxyValue { pairs.append(("no_proxy", noProxyValue)) }
         let lower = pairs.map { "\($0.0)=\(shellQuote($0.1))" }
         let upper = pairs.map { "\($0.0.uppercased())=\(shellQuote($0.1))" }
-        return "export " + (lower + upper).joined(separator: " ")
+        return (noProxyValue == nil ? "unset no_proxy NO_PROXY; " : "") + "export " + (lower + upper).joined(separator: " ")
     }
 
     /// fish 的 set -gx 命令。
     static func fish(proxyURL: String, noProxy: String) -> String {
-        let noProxyValue = noProxy.isEmpty ? Profile.defaultNoProxy : noProxy
-        let pairs = [("http_proxy", proxyURL), ("https_proxy", proxyURL), ("all_proxy", proxyURL), ("no_proxy", noProxyValue)]
-        return pairs.flatMap { ["set -gx \($0.0) \(shellQuote($0.1))", "set -gx \($0.0.uppercased()) \(shellQuote($0.1))"] }.joined(separator: "; ")
+        let noProxyValue = EnvironmentProxy.noProxyValue(noProxy)
+        var pairs = [("http_proxy", proxyURL), ("https_proxy", proxyURL), ("all_proxy", proxyURL)]
+        if let noProxyValue { pairs.append(("no_proxy", noProxyValue)) }
+        return pairs.flatMap { ["set -gx \($0.0) \(shellQuote($0.1))", "set -gx \($0.0.uppercased()) \(shellQuote($0.1))"] }.joined(separator: "; ") + (noProxyValue == nil ? "; set -e no_proxy; set -e NO_PROXY" : "")
     }
 
     /// 剪贴板历史工具认的「不要记下来」的标记（nspasteboard.org 的约定）。
