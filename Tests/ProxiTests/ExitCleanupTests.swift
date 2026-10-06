@@ -152,6 +152,7 @@ final class ExitCleanupTests: XCTestCase {
         XCTAssertEqual(backend.calls, ["clearGit", "clearNpm"])
         XCTAssertNil(resumed.persisted.pendingCleanup)
         XCTAssertFalse(resumed.persisted.enabledByUs)
+        XCTAssertEqual(resumed.persisted.appliedTargets, [])
         XCTAssertNil(resumed.persisted.original)
     }
 

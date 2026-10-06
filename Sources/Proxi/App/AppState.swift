@@ -573,9 +573,11 @@ final class AppState: ObservableObject {
                 failures.append(L("%@：%@", target.title, error))
             }
         }
-        persisted.enabledByUs = false
-        persisted.original = nil
-        persisted.pendingCleanup = nil
+        persisted.enabledByUs = !appliedTargets.isEmpty
+        if appliedTargets.isEmpty {
+            persisted.original = nil
+            persisted.pendingCleanup = nil
+        }
         savePersisted()
         finish(action: L("清除所有代理设置"), failures: failures, successText: L("已改为直接连接"))
     }
@@ -858,6 +860,7 @@ final class AppState: ObservableObject {
     func resumePendingCleanup() async {
         guard let pending = persisted.pendingCleanup, !busy else { return }
         busy = true
+        persisted.appliedTargets = pending.targets
         Log.info("接着清理上次退出时没清理完的「\(pending.profileName)」：\(pending.targets.map(\.rawValue).joined(separator: "、"))")
         var remaining: [ProxyTarget] = []
         var problems: [String] = []
