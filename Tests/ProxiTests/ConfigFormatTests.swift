@@ -77,6 +77,10 @@ final class ConfigFormatTests: XCTestCase {
         XCTAssertEqual(rows.count, 2)
         XCTAssertEqual(rows[0]["cloudExtra"] as? Int, 2)
         XCTAssertEqual(rows[1]["localExtra"] as? Int, 1)
+        // 不支持的配置都显示相同摘要，不能据此吞掉不同身份的条目。
+        let unknownLocal = try config(#"{"profiles":[{"name":"future","host":"local","targets":["docker"]}]}"#)
+        let unknownCloud = try config(#"{"profiles":[{"name":"future","host":"cloud","targets":["gradle"]}]}"#)
+        XCTAssertEqual(unknownLocal.merging(cloud: unknownCloud).profiles.count, 2)
     }
 
     @MainActor

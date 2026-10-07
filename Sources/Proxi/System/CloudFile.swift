@@ -209,7 +209,8 @@ extension AppConfig {
         var profiles = cloud.profiles
         for profile in self.profiles {
             let duplicate = profiles.contains { existing in
-                existing.id == profile.id || (existing.name == profile.name && existing.kind == profile.kind && existing.summary == profile.summary)
+                existing.id == profile.id || (!existing.isUnsupported && !profile.isUnsupported
+                    && existing.name == profile.name && existing.kind == profile.kind && existing.summary == profile.summary)
             }
             if !duplicate {
                 profiles.append(profile)
