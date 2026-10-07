@@ -50,6 +50,8 @@ jobs:
             exit 1
           fi
           grep -E "error:" "$RUNNER_TEMP/build.log" | sort -u | head -20 || true
+      - name: 安装 fish（验证三种 shell 的提示符钩子）
+        run: brew install fish
       - name: 单元测试
         run: |
           set -o pipefail
@@ -57,7 +59,7 @@ jobs:
           # Team ID 的比对必须拿 runner 上真实的 Developer ID 程序测到，不许跳过。
           mkdir -p screenshots
           # 代理引擎的单元测试会写它的日志：放到临时目录，不和后面冒烟测试的数据目录混在一起。
-          if ! PROXI_ENGINE_DIR="$RUNNER_TEMP/engine-tests" PROXI_ICON_PREVIEW_DIR="$PWD/screenshots" PROXI_REQUIRE_SIGNED_SAMPLE=1 swift test > "$RUNNER_TEMP/test.log" 2>&1; then
+          if ! PROXI_ENGINE_DIR="$RUNNER_TEMP/engine-tests" PROXI_ICON_PREVIEW_DIR="$PWD/screenshots" PROXI_REQUIRE_SIGNED_SAMPLE=1 PROXI_REQUIRE_FISH=1 swift test > "$RUNNER_TEMP/test.log" 2>&1; then
             # 失败时只打错误和没通过的测试（编译警告很多）。
             grep -E "^/.*error:|error: -\[|failed \(|Executed [0-9]+ tests" "$RUNNER_TEMP/test.log" | sort -u | head -150 | tee "$RUNNER_TEMP/test-errors.txt"
             echo "::error title=单元测试失败::$(head -60 "$RUNNER_TEMP/test-errors.txt" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
@@ -147,6 +149,13 @@ jobs:
           echo '{"syncEnabled":true}' > "$support/state.json"
           echo "PROXI_SYNC_DIR=$cloud" >> "$GITHUB_ENV"
           # 直接运行 .app 里的二进制，环境变量才能传进去；系统仍把它当作 dist/Proxi.app 在运行，proxi:// 命令照常送达。
+          # 离线的 env / shell-init 不会启动 GUI；状态关闭时清理当前 shell 的旧变量。
+          (
+            export http_proxy=old NO_PROXY=old
+            eval "$(dist/Proxi.app/Contents/MacOS/Proxi env --shell bash)"
+            [ -z "${http_proxy+x}" ] && [ -z "${NO_PROXY+x}" ] || { echo "离线 env 没清理变量"; exit 1; }
+          )
+          pgrep -x Proxi >/dev/null && { echo "env 不该启动 GUI"; exit 1; }
           PROXI_SYNC_DIR="$cloud" dist/Proxi.app/Contents/MacOS/Proxi >/dev/null 2>&1 &
           sleep 8
           if ! pgrep -x Proxi >/dev/null; then
@@ -194,6 +203,14 @@ jobs:
           [ "$(launchctl getenv http_proxy)" = "$expected" ] || { echo "环境变量 http_proxy 不对：$(launchctl getenv http_proxy)"; exit 1; }
           [ "$(launchctl getenv ALL_PROXY)" = "$expected" ] || { echo "环境变量 ALL_PROXY 不对：$(launchctl getenv ALL_PROXY)"; exit 1; }
           [ "$(launchctl getenv no_proxy)" = "localhost,.corp.example" ] || { echo "环境变量 no_proxy 不对"; exit 1; }
+          # 在子 shell 里实际 eval，不把凭据打印进日志，也不污染测试工作流的环境。
+          (
+            eval "$("$cli" env --shell bash)"
+            [ "$http_proxy" = "$expected" ] && [ "$HTTP_PROXY" = "$expected" ] || { echo "env 命令没有刷新代理"; exit 1; }
+            [ "$no_proxy" = "localhost,.corp.example" ] || { echo "env 的绕过列表不对"; exit 1; }
+            eval "$("$cli" env --shell bash --unset)"
+            [ -z "${http_proxy+x}" ] && [ -z "${NO_PROXY+x}" ] || { echo "env --unset 没有清理变量"; exit 1; }
+          )
           grep -q "^proxy=$expected" "$HOME/.npmrc" || { echo ".npmrc 里的代理不对"; cat "$HOME/.npmrc" || true; exit 1; }
           "$cli" status | tee "$RUNNER_TEMP/status-on.txt"
           grep -q "开发代理" "$RUNNER_TEMP/status-on.txt" || { echo "状态里没有正在用的配置"; exit 1; }

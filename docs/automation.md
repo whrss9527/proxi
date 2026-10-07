@@ -2,7 +2,7 @@
 
 [← 回到 README](../README.zh-CN.md)
 
-Proxi 在本机开了一个控制接口（Unix 套接字 `~/Library/Application Support/Proxi/control.sock`，只有你自己的账户能连）。命令行工具、MCP 服务器（给 AI 助手用）和 URL 命令都经它操作正在运行的 Proxi，用的是同一套工具。它们只能查看状态、开关代理、切换配置和测试连接，不能改配置。
+Proxi 在本机开了一个控制接口（Unix 套接字 `~/Library/Application Support/Proxi/control.sock`，只有你自己的账户能连）。命令行工具、MCP 服务器（给 AI 助手用）和 URL 命令都经它操作正在运行的 Proxi，用的是同一套工具。它们只能查看状态、开关代理、切换配置和测试连接，不能改配置。`env` 与 `shell-init` 直接读取本机状态并生成当前 shell 的命令，不经过控制接口。
 
 能做到哪一步由设置 →「自动化」里的**权限**决定：
 
@@ -32,6 +32,25 @@ proxi call use_profile '{"profile":"公司代理"}'   # 直接调用某个工具
 加 `--json` 输出完整的 JSON。退出码：0 成功，1 出错，2 用法不对，3 权限不够。
 
 `status --json` 的 `proxy.targets` 是配置要求开启的范围，`proxy.appliedTargets` 是 Proxi 成功写入、关闭时需要清理的范围。`proxy.targetStates` 分别报告 `system`、`environment`、`git`、`npm` 的状态：`notApplied`、`applied`、`failed` 或 `changedExternally`。开启某个范围失败时，其他成功的范围仍会保留并可以关闭；查看 `lastError` 可了解本次操作的失败原因。
+
+## 当前终端与提示符刷新
+
+`proxi env` 只读取本机状态和非交互钥匙串，不启动 GUI，不改系统设置或配置文件；默认按 `$SHELL` 选择 zsh/bash/fish，不能识别时用 zsh。关闭代理、环境范围未成功写入或 PAC 配置时输出清理命令。密码无法非交互读取时返回错误，不输出替代地址，已在 shell 中的变量保留。
+
+```sh
+eval "$(proxi env --shell zsh)"          # 当前窗口立即跟上
+proxi env --shell bash --unset           # 输出清理变量的命令
+eval "$(proxi shell-init zsh)"           # 放在 ~/.zshrc，每个提示符前自动刷新
+eval "$(proxi shell-init bash)"          # 放在 ~/.bashrc（登录 shell 需先 source 它）
+```
+
+fish 在 `~/.config/fish/config.fish` 写 `proxi shell-init fish | source`。初始化可重复执行，原有提示符钩子保留。之后开关代理，已打开的终端在下一个提示符前更新，不需要重开应用。生成的 env 命令含代理认证信息时，不要存到公开日志中。
+
+## JSON 与 MCP 兼容约定
+
+`--json` 的已有字段名与类型、MCP 工具名称与已有参数，在同一主版本内保持兼容；后续可增加字段、工具与可选参数。客户端应忽略未知字段，并对新状态取值提供回退。改变已有字段类型或必填参数会使用明确的新接口版本，而不是静默替换。
+
+`proxi env --json` 返回 `schemaVersion: 1`、`shell`、`enabled`、`variables`（字符串字典）和 `unset`（变量名数组）；`proxi shell-init zsh --json` 返回 `schemaVersion`、`shell`、`script`。`variables` 保留实际命令所需的认证信息，只用于当前 shell。其他控制命令的 JSON 是控制接口工具的完整结果；MCP 沿用协商的 JSON-RPC 协议。
 
 ## AI 助手（MCP）
 
