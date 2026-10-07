@@ -79,7 +79,11 @@ final class AppState: ObservableObject {
     private var watcher: SystemWatcher?
     private var refreshTimer: Timer?
     private var healthTimer: Timer?
-    private var healthFailures = 0
+    private var healthMonitor = ProxyHealthMonitor()
+    private var healthCheckRunning = false
+    private var healthChecksStarted = false
+    private let reachability: (String, Int) async -> Bool
+    private let healthClock: () -> Date
     private var cancellables = Set<AnyCancellable>()
 
     var onStatusChanged: (@MainActor () -> Void)?
@@ -99,12 +103,16 @@ final class AppState: ObservableObject {
     }
 
     /// 测试时传假的系统后端，persists 为 false 时不写磁盘上的配置和本机状态。
-    init(config: AppConfig, persisted: PersistedState, backend: ProxyBackend, legacy: LegacyCleanup.Findings = LegacyCleanup.Findings(), persists: Bool) {
+    init(config: AppConfig, persisted: PersistedState, backend: ProxyBackend, legacy: LegacyCleanup.Findings = LegacyCleanup.Findings(), persists: Bool,
+         reachability: @escaping (String, Int) async -> Bool = { await ProxyTester.reachable(host: $0, port: $1) },
+         healthClock: @escaping () -> Date = Date.init) {
         self.legacy = legacy
         self.config = config
         self.persisted = persisted
         self.backend = backend
         self.persists = persists
+        self.reachability = reachability
+        self.healthClock = healthClock
         snapshot = backend.currentSystemProxy()
         guard persists else { return }
         $config
@@ -125,9 +133,8 @@ final class AppState: ObservableObject {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
-        healthTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.checkHealth() }
-        }
+        healthChecksStarted = true
+        scheduleHealthCheck()
         loginItemEnabled = LoginItem.isEnabled
         extensions.readState = { [weak self] in self?.persisted.extensionState ?? ExtensionState() }
         extensions.writeState = { [weak self] state in
@@ -625,7 +632,7 @@ final class AppState: ObservableObject {
 
     private func finish(action: String, failures: [String], successText: String) {
         busy = false
-        healthFailures = 0
+        healthMonitor.reset()
         refresh()
         onStatusChanged?()
         if failures.isEmpty {
@@ -812,28 +819,46 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func scheduleHealthCheck() {
+        guard healthChecksStarted else { return }
+        healthTimer?.invalidate()
+        healthTimer = Timer.scheduledTimer(withTimeInterval: healthMonitor.interval, repeats: false) { [weak self] _ in
+            Task { @MainActor in await self?.checkHealth() }
+        }
+    }
+
     func checkHealth() async {
+        guard !healthCheckRunning else { return }
+        healthCheckRunning = true
+        healthTimer?.invalidate()
+        defer {
+            healthCheckRunning = false
+            scheduleHealthCheck()
+        }
         guard config.healthCheck, case .on(let profile) = status, profile.kind != .pac else {
-            health = .unknown
-            healthFailures = 0
+            healthMonitor.reset()
+            if health != .unknown {
+                health = .unknown
+                onStatusChanged?()
+            }
             return
         }
-        let reachable = await ProxyTester.reachable(host: profile.host, port: profile.port)
-        if reachable {
-            if health == .down {
-                notify(title: L("代理服务器恢复了"), body: profile.summary, problem: false)
-            }
-            health = .ok
-            healthFailures = 0
-        } else {
-            healthFailures += 1
-            // 连续两次连不上才算故障，避免偶发抖动。
-            if healthFailures >= 2 && health != .down {
-                health = .down
-                notify(title: L("连不上代理服务器"), body: L("%@（%@）没有响应，浏览器可能无法上网", profile.name, profile.summary), problem: true)
-            }
+        let reachable = await reachability(profile.host, profile.port)
+        // 请求期间可能换配置、关闭代理或关闭检查；旧响应不能改新状态。
+        guard !Task.isCancelled, config.healthCheck, case .on(let current) = status,
+              current.id == profile.id, current.host == profile.host, current.port == profile.port else { return }
+        let notice = healthMonitor.record(reachable, profile: profile, now: healthClock())
+        if health != healthMonitor.health {
+            health = healthMonitor.health
+            onStatusChanged?()
         }
-        onStatusChanged?()
+        switch notice {
+        case .failed:
+            notify(title: L("连不上代理服务器"), body: L("%@（%@）没有响应，浏览器可能无法上网", profile.name, profile.summary), problem: true)
+        case .recovered:
+            notify(title: L("代理服务器恢复了"), body: profile.summary, problem: false)
+        case nil: break
+        }
     }
 
     // MARK: - 通知与退出
