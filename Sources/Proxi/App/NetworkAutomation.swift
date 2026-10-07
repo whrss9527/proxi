@@ -22,6 +22,19 @@ final class NetworkAutomation: NSObject, ObservableObject, CLLocationManagerDele
     private var lastKey: String?
     private var cancellables = Set<AnyCancellable>()
 
+    private let identityResolver: NetworkIdentityResolver
+
+    init(identityResolver: NetworkIdentityResolver? = nil) {
+        self.identityResolver = identityResolver ?? NetworkIdentityResolver(
+            read: { await NetworkAutomation.readIdentity() },
+            probe: { ip in
+                // macOS ping 的 -W 单位是毫秒；只唤起 ARP，不要求网关回答 ICMP。
+                _ = try? await Shell.run("/sbin/ping", ["-c", "1", "-W", "1000", ip], timeout: 2)
+            }
+        )
+        super.init()
+    }
+
     func start(state: AppState) {
         self.state = state
         let manager = CLLocationManager()
@@ -123,6 +136,10 @@ final class NetworkAutomation: NSObject, ObservableObject, CLLocationManagerDele
 
     /// 现在连着的网络。
     func currentIdentity() async -> NetworkIdentity {
+        await identityResolver.resolve()
+    }
+
+    private static func readIdentity() async -> NetworkIdentity {
         var identity = NetworkIdentity()
         if let value = SCDynamicStoreCopyValue(nil, "State:/Network/Global/IPv4" as CFString) as? [String: Any] {
             identity.routerIP = value["Router"] as? String
@@ -157,6 +174,7 @@ final class NetworkAutomation: NSObject, ObservableObject, CLLocationManagerDele
     func evaluate() async {
         guard let state else { return }
         let identity = await currentIdentity()
+        guard !Task.isCancelled else { return }
         if identity != self.identity {
             self.identity = identity
         }
@@ -166,14 +184,14 @@ final class NetworkAutomation: NSObject, ObservableObject, CLLocationManagerDele
             return
         }
         let key = "\(rule.id)|\(identity.ssid ?? "")|\(identity.routerIP ?? "")|\(identity.routerMAC ?? "")"
-        guard key != lastKey else { return }
+        guard identity.awaitingRouterMAC || key != lastKey else { return }
         // 正在开关代理（比如等代理引擎的内核起来、管理员密码的对话框开着）时先不切，过一会儿再看：
         // 这时开关会被忽略，记下「切过了」的话这个网络就再也不切了。
         if state.busy {
             schedule(delay: 3)
             return
         }
-        lastKey = key
+        lastKey = identity.awaitingRouterMAC ? nil : key
         apply(rule, identity: identity, state: state)
     }
 
