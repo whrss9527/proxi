@@ -2,7 +2,7 @@ import Foundation
 
 /// 同步到 iCloud 的内容：配置，加上是哪台机器、什么时候写的。
 struct SyncedConfig: Codable, Equatable {
-    static let currentFormat = 1
+    static let currentFormat = AppConfig.currentFormat
 
     var format: Int = SyncedConfig.currentFormat
     var updatedAt: Date
@@ -21,7 +21,7 @@ struct SyncedConfig: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        format = try container.decodeIfPresent(Int.self, forKey: .format) ?? SyncedConfig.currentFormat
+        format = try container.decodeIfPresent(Int.self, forKey: .format) ?? 1
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
         device = try container.decodeIfPresent(String.self, forKey: .device) ?? L("未知设备")
         config = try container.decode(AppConfig.self, forKey: .config)
@@ -30,10 +30,12 @@ struct SyncedConfig: Codable, Equatable {
 
 enum CloudFileError: LocalizedError {
     case unavailable
+    case newerFormat(Int)
 
     var errorDescription: String? {
         switch self {
         case .unavailable: return L("iCloud 云盘没有开启")
+        case .newerFormat(let format): return L("iCloud 配置格式 %@ 比这台 Mac 支持的版本更新，请更新 Proxi。", format)
         }
     }
 }
@@ -107,6 +109,17 @@ enum CloudFile {
         Host.current().localizedName ?? ProcessInfo.processInfo.hostName
     }
 
+    private struct FormatHeader: Decodable { var format: Int? }
+    private struct ConfigHeader: Decodable { var config: FormatHeader? }
+
+    /// 先读版本头，不解释更新版本的内容；写入协调区内也再次检查，防止并发覆盖。
+    static func requireSupportedFormat(_ data: Data) throws {
+        let format = try JSONDecoder().decode(FormatHeader.self, from: data).format ?? 1
+        guard format <= SyncedConfig.currentFormat else { throw CloudFileError.newerFormat(format) }
+        let configFormat = try JSONDecoder().decode(ConfigHeader.self, from: data).config?.format ?? 1
+        guard configFormat <= AppConfig.currentFormat else { throw CloudFileError.newerFormat(configFormat) }
+    }
+
     /// 读同步文件；不存在返回 nil。还没从 iCloud 下载下来的文件会先下载。
     static func read(at url: URL) throws -> SyncedConfig? {
         try? FileManager.default.startDownloadingUbiquitousItem(at: url)
@@ -115,7 +128,9 @@ enum CloudFile {
         NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: url, options: [], error: &coordinationError) { readURL in
             result = Result {
                 guard FileManager.default.fileExists(atPath: readURL.path) else { return nil }
-                return try decoder.decode(SyncedConfig.self, from: try Data(contentsOf: readURL))
+                let data = try Data(contentsOf: readURL)
+                try requireSupportedFormat(data)
+                return try decoder.decode(SyncedConfig.self, from: data)
             }
         }
         if let coordinationError {
@@ -125,12 +140,18 @@ enum CloudFile {
     }
 
     static func write(_ synced: SyncedConfig, to url: URL) throws {
+        guard synced.format <= SyncedConfig.currentFormat, synced.config.format <= AppConfig.currentFormat else {
+            throw CloudFileError.newerFormat(max(synced.format, synced.config.format))
+        }
         let data = try encoder.encode(synced)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         var coordinationError: NSError?
         var writeError: Error?
         NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { writeURL in
             do {
+                if FileManager.default.fileExists(atPath: writeURL.path) {
+                    try requireSupportedFormat(Data(contentsOf: writeURL))
+                }
                 try data.write(to: writeURL, options: .atomic)
             } catch {
                 writeError = error
@@ -146,26 +167,24 @@ enum CloudFile {
 
     /// 两台机器同时改过时 iCloud 会留下冲突版本：所有版本里 updatedAt 最新的胜出，写回去并清掉其他版本。
     /// 返回胜出的内容；没有冲突返回 nil。
-    static func resolveConflicts(at url: URL) -> SyncedConfig? {
+    static func resolveConflicts(at url: URL) throws -> SyncedConfig? {
         let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
         guard !conflicts.isEmpty else { return nil }
         var candidates: [SyncedConfig] = []
-        if let current = try? read(at: url) {
+        if let current = try read(at: url) {
             candidates.append(current)
         }
         for version in conflicts {
-            if let data = try? Data(contentsOf: version.url), let synced = try? decoder.decode(SyncedConfig.self, from: data) {
-                candidates.append(synced)
-            }
+            let data = try Data(contentsOf: version.url)
+            try requireSupportedFormat(data)
+            candidates.append(try decoder.decode(SyncedConfig.self, from: data))
         }
         let winner = newest(candidates)
+        if let winner { try write(winner, to: url) }
         for version in conflicts {
             version.isResolved = true
         }
         try? NSFileVersion.removeOtherVersionsOfItem(at: url)
-        if let winner {
-            try? write(winner, to: url)
-        }
         Log.info("iCloud 同步：解决了 \(conflicts.count) 个冲突版本，采用来自 \(winner?.device ?? "?") 的改动")
         return winner
     }
@@ -197,6 +216,7 @@ extension AppConfig {
             }
         }
         merged.profiles = profiles
+        merged.retainUnknownFields(from: cloud)
         return merged
     }
 }

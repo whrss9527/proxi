@@ -24,10 +24,7 @@ enum LegacyCleanup {
     }
 
     /// 现在的 config.json 和 state.json 里有的顶层键；别的键都是以前版本才有的设置。
-    static let knownConfigKeys: Set<String> = [
-        "profiles", "clickAction", "toggleHotkey", "offMode", "notifyLevel", "healthCheck", "disableOnExit", "testURL",
-        "autoCheckUpdates", "speedDisplay", "speedSide", "speedColorFollowsStatus", "automation",
-    ]
+    static let knownConfigKeys = Set(AppConfig.CodingKeys.allCases.map(\.rawValue))
     static let knownStateKeys: Set<String> = ["lastProfileID", "enabledByUs", "original", "systemServices", "syncEnabled", "noticeShown", "extension", "pendingCleanup"]
     /// 数据目录里以前版本用的子目录和文件：挪到代理引擎的数据目录。
     static let legacyDataItems = ["core", "imports", "journal.json"]
@@ -36,7 +33,8 @@ enum LegacyCleanup {
     static func inspect(configData: Data?, stateData: Data?) -> Findings {
         var findings = Findings()
         if let configData, let object = try? JSONSerialization.jsonObject(with: configData) as? [String: Any] {
-            findings.hadLegacySettings = !Set(object.keys).isSubset(of: knownConfigKeys)
+            findings.hadLegacySettings = object["engine"] != nil
+                || ((object["format"] as? Int ?? 1) < AppConfig.currentFormat && !Set(object.keys).isSubset(of: knownConfigKeys))
             if let profiles = object["profiles"] as? [Any] {
                 for item in profiles where Profile.isLegacyBuiltIn(item) {
                     guard let data = try? JSONSerialization.data(withJSONObject: item),

@@ -70,6 +70,8 @@ struct Profile: Codable, Identifiable, Equatable, Hashable {
     var bypass: String = Profile.defaultBypass
     var noProxy: String = Profile.defaultNoProxy
     var targets: Set<ProxyTarget> = [.system]
+    var unknownTargets: Set<String> = []
+    var isUnsupported: Bool { targets.isEmpty && !unknownTargets.isEmpty }
     /// 代理服务器要求登录时的用户名；不需要就留空。
     var username: String = ""
     /// 有没有密码。密码本身只存在这台 Mac 的钥匙串里（ProxyKeychain），不写进配置文件、不跟 iCloud 同步。
@@ -113,7 +115,8 @@ struct Profile: Codable, Identifiable, Equatable, Hashable {
         noProxy = (try? container.decodeIfPresent(String.self, forKey: .noProxy)) ?? Profile.defaultNoProxy
         if let names = try? container.decodeIfPresent([String].self, forKey: .targets) {
             let known = Set(names.compactMap(ProxyTarget.init(rawValue:)))
-            targets = known.isEmpty && !names.isEmpty ? Set([ProxyTarget.system]) : known
+            targets = known
+            unknownTargets = Set(names.filter { ProxyTarget(rawValue: $0) == nil })
         } else {
             targets = [.system]
         }
@@ -121,6 +124,22 @@ struct Profile: Codable, Identifiable, Equatable, Hashable {
         hasPassword = (try? container.decodeIfPresent(Bool.self, forKey: .hasPassword)) ?? false
         let legacy = try decoder.container(keyedBy: LegacyKeys.self)
         engine = (try? legacy.decodeIfPresent(Bool.self, forKey: .engine)) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(color, forKey: .color)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(host, forKey: .host)
+        try container.encode(port, forKey: .port)
+        try container.encode(pacURL, forKey: .pacURL)
+        try container.encode(bypass, forKey: .bypass)
+        try container.encode(noProxy, forKey: .noProxy)
+        try container.encode(username, forKey: .username)
+        try container.encode(hasPassword, forKey: .hasPassword)
+        try container.encode(Set(targets.map(\.rawValue)).union(unknownTargets).sorted(), forKey: .targets)
     }
 
     /// 以前版本里代理引擎那条配置（存的是 "engine": true）。
@@ -168,6 +187,7 @@ struct Profile: Codable, Identifiable, Equatable, Hashable {
 
     /// 菜单和列表里显示的一句话（不含密码）。
     var summary: String {
+        if isUnsupported { return L("这台 Mac 不支持") }
         switch kind {
         case .pac: return pacURL.isEmpty ? L("PAC 脚本") : pacURL
         case .socks5: return (hasCredentials ? "socks5://\(username)@" : "socks5://") + serverAddress
@@ -194,6 +214,7 @@ struct Profile: Codable, Identifiable, Equatable, Hashable {
 
     /// 校验，返回问题描述；没有问题返回 nil。
     func validate() -> String? {
+        if isUnsupported { return L("这台 Mac 不支持此配置的生效范围，请更新 Proxi。") }
         if name.trimmingCharacters(in: .whitespaces).isEmpty {
             return L("请填写配置名称")
         }

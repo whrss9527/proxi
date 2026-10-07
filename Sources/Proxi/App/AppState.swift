@@ -500,6 +500,11 @@ final class AppState: ObservableObject {
     /// 改过的配置，不能再从 status 推断上一个配置（改前有、改后没有的生效范围要清掉），也不能把自己设的代理当成「开启前的设置」记下来。
     func turnOn(_ profile: Profile, askForPassword: Bool = true, replacing old: Profile? = nil) {
         guard !busy else { return }
+        guard !profile.isUnsupported else {
+            lastError = profile.validate()
+            onStatusChanged?()
+            return
+        }
         // 要登录的代理：密码从这台 Mac 的钥匙串里取；还没有（比如配置是从别的 Mac 同步来的）就请用户输入一次。
         var password = ""
         if profile.needsPassword {

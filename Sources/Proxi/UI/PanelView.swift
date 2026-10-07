@@ -92,7 +92,7 @@ struct PanelView: View {
                 Toggle(L("开 / 关代理"), isOn: isOn)
                     .toggleStyle(.switch)
                     .labelsHidden()
-                    .disabled(state.config.profiles.isEmpty && !state.status.isOn && !isExternal)
+                    .disabled(!state.status.isOn && !isExternal && (state.config.profiles.isEmpty || state.selectedProfile?.isUnsupported == true))
             }
         }
         .padding(12)
@@ -171,6 +171,7 @@ struct PanelView: View {
                     ProfileRow(profile: profile, active: isActive(profile), result: state.testResults[profile.id])
                 }
                 .buttonStyle(HoverRowStyle())
+                .disabled(profile.isUnsupported && !isActive(profile))
             }
         }
     }
