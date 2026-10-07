@@ -90,6 +90,9 @@ enum SpeedSide: String, Codable, CaseIterable, Identifiable {
 }
 
 struct AppConfig: Codable, Equatable {
+    static let currentFormat = 2
+    private(set) var format = currentFormat
+    private var preserved = ConfigPreservation()
     /// 测速默认访问的地址：苹果用来检测网络连通的页面，返回很小，哪里都能访问。
     static let defaultTestURL = "https://www.apple.com/library/test/success.html"
     /// 以前版本的默认测速地址；还是它时换成新的默认值。
@@ -114,14 +117,15 @@ struct AppConfig: Codable, Equatable {
 
     init() {}
 
-    private enum CodingKeys: String, CodingKey {
-        case profiles, clickAction, toggleHotkey, offMode, notifyLevel, healthCheck, disableOnExit, testURL, autoCheckUpdates, speedDisplay, speedSide, speedColorFollowsStatus, automation
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case format, profiles, clickAction, toggleHotkey, offMode, notifyLevel, healthCheck, disableOnExit, testURL, autoCheckUpdates, speedDisplay, speedSide, speedColorFollowsStatus, automation
     }
 
     /// 每一项单独容错：哪一项读不出来（新版本加的取值、手改坏了）就用默认值，不让整个配置读失败、所有配置都没了。
     /// 配置列表一条条读，读不出来的那条跳过。以前版本里的其他设置（已经去掉的功能）直接忽略。
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        format = max(Self.currentFormat, (try? container.decodeIfPresent(Int.self, forKey: .format)) ?? 1)
         // 代理引擎那条配置不从文件里读（以前的版本写进去过）：扩展开着时由 ExtensionManager 加回来。
         profiles = ((try? container.decodeIfPresent(LossyArray<Profile>.self, forKey: .profiles))?.elements ?? []).filter { !$0.engine }
         clickAction = (try? container.decodeIfPresent(ClickAction.self, forKey: .clickAction)) ?? .panel
@@ -143,10 +147,36 @@ struct AppConfig: Codable, Equatable {
         speedSide = (try? container.decodeIfPresent(SpeedSide.self, forKey: .speedSide)) ?? .left
         speedColorFollowsStatus = (try? container.decodeIfPresent(Bool.self, forKey: .speedColorFollowsStatus)) ?? true
         automation = (try? container.decodeIfPresent(AutomationConfig.self, forKey: .automation)) ?? AutomationConfig()
+        if let original = try? ConfigJSON(from: decoder),
+           let knownData = try? JSONEncoder().encode(Known(config: self)),
+           let known = try? JSONDecoder().decode(ConfigJSON.self, from: knownData) {
+            preserved = ConfigPreservation(original: original.removingLegacySettings(profiles: profiles), known: known)
+        }
+    }
+
+    /// 合并时其他设置以本机为准，配置列表以云端为准；两边未知字段均保留。
+    mutating func retainUnknownFields(from cloud: AppConfig) {
+        let profiles = cloud.preserved.children["profiles"]?.combining(with: preserved.children["profiles"] ?? ConfigPreservation())
+            ?? preserved.children["profiles"]
+        preserved = preserved.combining(with: cloud.preserved)
+        preserved.children["profiles"] = profiles
+        format = max(format, cloud.format)
+    }
+
+    private struct Known: Encodable {
+        var config: AppConfig
+        func encode(to encoder: Encoder) throws { try config.encodeKnown(to: encoder) }
     }
 
     func encode(to encoder: Encoder) throws {
+        if preserved.isEmpty { try encodeKnown(to: encoder); return }
+        let known = try JSONDecoder().decode(ConfigJSON.self, from: JSONEncoder().encode(Known(config: self)))
+        try preserved.merging(into: known).encode(to: encoder)
+    }
+
+    private func encodeKnown(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(format, forKey: .format)
         // 代理引擎那条配置只在运行时存在，不写进文件，也就不会经 iCloud 同步到别的 Mac。
         try container.encode(profiles.filter { !$0.engine }, forKey: .profiles)
         try container.encode(clickAction, forKey: .clickAction)
