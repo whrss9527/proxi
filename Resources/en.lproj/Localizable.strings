@@ -606,3 +606,5 @@
 "代理部分开启：%@" = "Proxy partly on: %@";
 
 "部分开启 · %@" = "Partly on · %@";
+
+"无法非交互读取代理密码；终端环境保持不变。" = "Cannot read the proxy password without interaction; the terminal environment is unchanged.";

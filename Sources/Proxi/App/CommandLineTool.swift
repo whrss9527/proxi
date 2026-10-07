@@ -5,7 +5,7 @@ import Foundation
 enum CommandLineTool {
     static let commands: Set<String> = [
         "status", "on", "off", "toggle", "use", "profiles", "test", "logs",
-        "call", "tools", "mcp", "help", "version",
+        "call", "tools", "mcp", "help", "version", "env", "shell-init",
     ]
 
     /// 带了认识的子命令时由命令行处理。--json 写在子命令前面（proxi --json status）也认，不然会再打开一个图形界面的 Proxi。
@@ -31,6 +31,26 @@ enum CommandLineTool {
                 return 0
             case "version", "--version":
                 print("Proxi \(UpdateChecker.currentVersion)")
+                return 0
+            case "env":
+                guard let options = ShellEnvironment.options(rest) else { printError(help); return 2 }
+                let (config, state) = try ShellEnvironment.snapshot(configURL: Store.configURL, stateURL: Store.stateURL, unset: options.unset)
+                let variables = try ShellEnvironment.variables(config: config, state: state, unset: options.unset) {
+                    ProxyKeychain.password(for: $0, allowUI: false)
+                }
+                if json {
+                    print(JSONRPC.pretty(["schemaVersion": 1, "shell": options.shell.rawValue,
+                                          "enabled": !variables.isEmpty, "variables": variables,
+                                          "unset": ShellEnvironment.names.filter { variables[$0] == nil }]))
+                } else {
+                    print(ShellEnvironment.command(variables, shell: options.shell))
+                }
+                return 0
+            case "shell-init":
+                guard rest.count == 1, let shell = ProxyShell(rawValue: rest[0]) else { printError(help); return 2 }
+                let script = ShellEnvironment.initialization(shell)
+                if json { print(JSONRPC.pretty(["schemaVersion": 1, "shell": shell.rawValue, "script": script])) }
+                else { print(script) }
                 return 0
             case "tools":
                 for tool in ControlCatalog.tools {
@@ -199,6 +219,8 @@ enum CommandLineTool {
       status                    代理现在的状态
       profiles                  代理配置
       logs [行数]               日志
+      env [--shell zsh|bash|fish] [--unset]  当前终端的代理环境
+      shell-init zsh|bash|fish   提示符自动刷新钩子
 
     开关和切换
       on [配置名]               开启代理（不写配置名就开上次用的）
@@ -213,7 +235,7 @@ enum CommandLineTool {
       mcp                       作为 MCP 服务器运行（给 AI 助手用）
       version
 
-    Proxi 没在运行时会自动在后台打开。权限在设置的「自动化」页调整。
+    env 和 shell-init 不启动 Proxi。其他控制命令在 Proxi 没运行时自动打开，权限在「自动化」页调整。
     """
 
     static let helpEnglish = """
@@ -223,6 +245,8 @@ enum CommandLineTool {
       status                    Current proxy status
       profiles                  Proxy profiles
       logs [lines]              Logs
+      env [--shell zsh|bash|fish] [--unset]  Proxy environment for this shell
+      shell-init zsh|bash|fish   Prompt refresh hook
 
     Switch
       on [profile]              Turn the proxy on (the last used profile if none is given)
@@ -237,6 +261,6 @@ enum CommandLineTool {
       mcp                       Run as an MCP server (for AI assistants)
       version
 
-    Proxi is opened in the background when it isn't running. Permissions are in Settings → Automation.
+    env and shell-init do not launch Proxi. Other control commands open it in the background. Permissions are in Settings → Automation.
     """
 }
