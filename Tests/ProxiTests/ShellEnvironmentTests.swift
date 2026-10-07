@@ -108,7 +108,7 @@ final class ShellEnvironmentTests: XCTestCase {
         XCTAssertTrue(result.succeeded)
         XCTAssertEqual(result.output, text)
         let hook = ShellEnvironment.initialization(.fish)
-        let exercise = "set -g fish_greeting ''; function proxi; echo \"set -gx http_proxy 'http://new:3128'\"; end; " + hook + "\n" + hook + "\nemit fish_prompt; printf '%s' \"$http_proxy\""
+        let exercise = "set -g fish_greeting ''; function proxi; echo \"set -gx http_proxy 'http://new:3128'\"; end; " + hook + "\n" + hook + "\nemit fish_prompt >/dev/null; printf '%s' \"$http_proxy\""
         let refreshed = try await Shell.run(fish, ["-c", exercise])
         XCTAssertTrue(refreshed.succeeded, refreshed.output)
         XCTAssertEqual(refreshed.output, "http://new:3128")
