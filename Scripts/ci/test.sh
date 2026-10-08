@@ -10,11 +10,10 @@ mkdir -p screenshots
 python3 Scripts/ci/detection-fixture.py "$RUNNER_TEMP/detection-port" > "$RUNNER_TEMP/detection-fixture.log" 2>&1 &
 fixture_pid=$!
 trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
-for _ in {1..30}; do
-  [[ -s "$RUNNER_TEMP/detection-port" ]] && break
-  sleep 0.1
-done
-[[ -s "$RUNNER_TEMP/detection-port" ]] || { echo '检测 fixture 未就绪'; exit 1; }
+if ! wait_for 15 "检测 fixture 就绪" test -s "$RUNNER_TEMP/detection-port"; then
+  cat "$RUNNER_TEMP/detection-fixture.log"
+  exit 1
+fi
 export PROXI_DETECTION_FIXTURE_PORT
 PROXI_DETECTION_FIXTURE_PORT=$(cat "$RUNNER_TEMP/detection-port")
 # 代理引擎的单元测试会写它的日志：放到临时目录，不和后面冒烟测试的数据目录混在一起。
