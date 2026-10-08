@@ -29,15 +29,30 @@ stop_app() {
 }
 json_match() {
   local binary=$1 query=$2 result
-  # CLI 会在程序未运行时启动 GUI；等待启动期间只询问已存在的实例。
-  pgrep -x "$(basename "$binary")" >/dev/null || return 1
-  result=$(python3 Scripts/ci/read-status.py "$binary") || return 1
+  # 进程存在不代表控制接口已就绪；直接读套接字，避免 CLI 的自动启动重新打开窗口。
+  result=$(python3 Scripts/ci/read-status.py "$binary" 2> "$RUNNER_TEMP/status-read.log") || return 1
   printf '%s\n' "$result" > "$RUNNER_TEMP/status-last.json"
-  printf '%s\n' "$result" | jq -e "$query" >/dev/null
+  printf '%s\n' "$result" | jq -e "$query" >/dev/null 2>> "$RUNNER_TEMP/status-read.log"
 }
 wait_json() {
   local binary=$1 query=$2 timeout=${3:-30}
-  wait_for "$timeout" "状态：$query" json_match "$binary" "$query"
+  # 只保留本次等待的状态，避免失败日志误用上一次启动的结果。
+  rm -f "$RUNNER_TEMP/status-last.json"
+  : > "$RUNNER_TEMP/status-read.log"
+  if wait_for "$timeout" "状态：$query" json_match "$binary" "$query"; then
+    return 0
+  fi
+  printf '状态读取目标：%s\n' "$binary" >&2
+  if [[ -f "$RUNNER_TEMP/status-last.json" ]]; then
+    printf '%s\n' '本次等待最后一次成功读取的状态：' >&2
+    cat "$RUNNER_TEMP/status-last.json" >&2
+  else
+    printf '%s\n' '本次等待未收到有效状态。' >&2
+  fi
+  if [[ -s "$RUNNER_TEMP/status-read.log" ]]; then
+    cat "$RUNNER_TEMP/status-read.log" >&2
+  fi
+  return 1
 }
 show_settings() {
   local page=$1 binary=${2:-dist/Proxi.app/Contents/MacOS/Proxi}
@@ -75,3 +90,4 @@ assert_for() {
     sleep 0.25
   done
 }
+
