@@ -64,11 +64,13 @@ show_panel() {
   open 'proxi://panel'
   wait_json "$binary" '.interface.panelVisible == true'
 }
-# 程序已发出 HTTP 请求时，Launch Services 仍可能尚未准备好接收链接。
-# 只等到系统成功接收一次，不重复送入已经接收的更新命令。
-open_app_url() {
-  local app=$1 url=$2 timeout=${3:-30}
-  wait_for "$timeout" "应用可接收链接：$url" open -a "$app" "$url"
+# 旧版可能在启动完成前丢掉链接，或在检查更新期间忽略安装命令。
+# 安装一旦开始，旧版自身会拒绝重复安装；观察到下载请求后不再发送。
+app_update_requested() {
+  local app=$1 url=$2 port=$3 archive=$4
+  if fixture_requested "$port" "$archive"; then return 0; fi
+  open -a "$app" "$url" || return 1
+  return 1
 }
 file_contains() { grep -q -- "$2" "$1"; }
 file_not_contains() { ! grep -q -- "$2" "$1"; }
@@ -84,7 +86,7 @@ fixture_server() {
 fixture_requested() {
   local port=$1 path=$2
   [[ -f "$RUNNER_TEMP/fixture-requests-$port.jsonl" ]] || return 1
-  jq -e -s --arg path "$path" 'any(.[]; .path == $path and .status == 200)' "$RUNNER_TEMP/fixture-requests-$port.jsonl" >/dev/null
+  jq -e -s --arg path "$path" 'any(.[]; .method == "GET" and .path == $path and .status == 200)' "$RUNNER_TEMP/fixture-requests-$port.jsonl" >/dev/null
 }
 file_json_match() { [[ -f "$1" ]] && jq -e "$2" "$1" >/dev/null; }
 assert_for() {

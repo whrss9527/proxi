@@ -9,6 +9,16 @@ exec > >(tee "$RUNNER_TEMP/legacy.log") 2>&1
 # 新程序第一次启动时把数据目录挪到 Proxi、把自己改名为 Proxi.app 再重新打开，并改好改名前装的命令行工具。
 old_support="$HOME/Library/Application Support/ProxySwitch"
 support="$HOME/Library/Application Support/Proxi"
+legacy_failure() {
+  local file
+  for file in "$old_support/proxyswitch.log" "$support/proxi.log"; do
+    [[ -f "$file" ]] || continue
+    cp "$file" "$RUNNER_TEMP/legacy-$(basename "$file")" || true
+    echo "===== 旧版更新失败时的应用日志：$(basename "$file") ====="
+    tail -80 "$file" || true
+  done
+}
+trap legacy_failure ERR
 rm -rf "$support" "$old_support"
 bash Scripts/ci/make-update-feed.sh
 work="$RUNNER_TEMP/legacy-update"
@@ -34,8 +44,9 @@ cat > "$work/feed/latest.json" <<JSON
  "assets":[$assets{"name":"SHA256SUMS.txt","size":100,"browser_download_url":"http://127.0.0.1:8766/SHA256SUMS.txt"}]}
 JSON
 fixture_server 8766 "$work/feed"
-wait_for 30 "本地假发布" curl --connect-timeout 1 --max-time 2 -sf -o /dev/null http://127.0.0.1:8766/latest.json
-curl -sSf -o /dev/null http://127.0.0.1:8766/latest.json || { echo "本地的假发布服务器没有起来"; exit 1; }
+# 健康检查用 HEAD，不记成旧程序真正发出的 GET。
+wait_for 30 "本地假发布" curl --head --connect-timeout 1 --max-time 2 -sf -o /dev/null http://127.0.0.1:8766/latest.json
+curl --head -sSf -o /dev/null http://127.0.0.1:8766/latest.json || { echo "本地的假发布服务器没有起来"; exit 1; }
 # 旧版本的数据：一套配置，加上 0.12 及以前才有的设置和数据目录里的子目录（新版本第一次启动时去掉）。
 mkdir -p "$old_support/imports"
 echo "x" > "$old_support/imports/local.txt"
@@ -51,7 +62,7 @@ chmod 755 /usr/local/bin/proxyswitch
 PROXYSWITCH_UPDATE_URL=http://127.0.0.1:8766/latest.json "$old_app/Contents/MacOS/ProxySwitch" >"$RUNNER_TEMP/legacy-launch.log" 2>&1 &
 wait_for 30 "旧程序检查到假发布" fixture_requested 8766 /latest.json
 # proxyswitch:// 这次的程序也认，用 -a 指定交给旧版本。
-open_app_url "$old_app" "proxyswitch://update"
+wait_for 30 "旧程序开始请求旧名字的更新包" app_update_requested "$old_app" "proxyswitch://update" 8766 /ProxySwitch-macos-arm64.zip
 wait_for 90 "新名字的程序已落盘" test -d "$new_app"
 wait_json "$new_app/Contents/MacOS/Proxi" '.version == "9.9.9"' 90
 echo "===== 日志（旧版本的日志挪过来后接着写） ====="

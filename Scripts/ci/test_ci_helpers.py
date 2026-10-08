@@ -99,25 +99,40 @@ class HelperTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('条件失效', result.stderr)
 
-    def test_app_url_waits_for_acceptance_and_stops_after_one_success(self):
+    def test_update_waits_for_download_and_stops_sending_after_progress(self):
         # 用 shell 函数替代 open，不接触真实应用或 Launch Services。
         result = self.shell('''set -e
 calls=0
+fixture_requested() {
+    [[ $1 == 8766 && $2 == /ProxySwitch-macos-arm64.zip ]] || return 99
+    ((calls >= 3))
+}
 open() {
     [[ $# == 3 && $1 == -a && $2 == "/fake/Old App.app" && $3 == proxyswitch://update ]] || return 99
     calls=$((calls + 1))
-    ((calls >= 3))
+    ((calls >= 2))
 }
-open_app_url "/fake/Old App.app" proxyswitch://update 3
+wait_for 3 download app_update_requested "/fake/Old App.app" proxyswitch://update 8766 /ProxySwitch-macos-arm64.zip
+app_update_requested "/fake/Old App.app" proxyswitch://update 8766 /ProxySwitch-macos-arm64.zip
 [[ $calls == 3 ]]
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_app_url_fails_when_system_never_accepts_it(self):
-        result = self.shell('open() { return 1; }; open_app_url /fake/App.app proxyswitch://update 0')
+    def test_accepting_update_url_does_not_count_as_download_readiness(self):
+        result = self.shell('open() { return 0; }; fixture_requested() { return 1; }; wait_for 0 download app_update_requested /fake/App.app proxyswitch://update 8766 /app.zip')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('等待超时', result.stderr)
-        self.assertIn('proxyswitch://update', result.stderr)
+
+    def test_fixture_readiness_requires_successful_get_not_health_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'fixture-requests-8766.jsonl'
+            records = [{'method': 'HEAD', 'path': '/latest.json', 'status': 200},
+                       {'method': 'GET', 'path': '/latest.json', 'status': 404}]
+            log.write_text(''.join(json.dumps(item) + '\n' for item in records))
+            self.assertNotEqual(self.shell('fixture_requested 8766 /latest.json', env={**os.environ, 'RUNNER_TEMP': tmp}).returncode, 0)
+            records.append({'method': 'GET', 'path': '/latest.json', 'status': 200})
+            log.write_text(''.join(json.dumps(item) + '\n' for item in records))
+            self.assertEqual(self.shell('fixture_requested 8766 /latest.json', env={**os.environ, 'RUNNER_TEMP': tmp}).returncode, 0)
 
     def status_env(self, tmp):
         return {**os.environ, 'HOME': tmp, 'RUNNER_TEMP': tmp, 'PROXI_ENGINE_DIR': ''}
@@ -281,6 +296,9 @@ open_app_url "/fake/Old App.app" proxyswitch://update 3
                 while not port_file.exists() and time.monotonic() < deadline:
                     time.sleep(0.05)
                 port = int(port_file.read_text())
+                with urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{port}/app.zip', method='HEAD')) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.read(), b'')
                 with urllib.request.urlopen(f'http://127.0.0.1:{port}/app.zip') as response:
                     self.assertEqual(response.read(), b'reviewed-fixture')
                 with self.assertRaises(urllib.error.HTTPError):
