@@ -48,7 +48,7 @@ sudo mkdir -p /usr/local/bin && sudo chown "$(id -un)" /usr/local/bin
 rm -f /usr/local/bin/proxi
 printf '#!/bin/sh\n# ProxySwitch 的命令行工具：proxyswitch help 看用法。\nexec %s "$@"\n' "'$old_app/Contents/MacOS/ProxySwitch'" > /usr/local/bin/proxyswitch
 chmod 755 /usr/local/bin/proxyswitch
-PROXYSWITCH_UPDATE_URL=http://127.0.0.1:8766/latest.json "$old_app/Contents/MacOS/ProxySwitch" >/dev/null 2>&1 &
+PROXYSWITCH_UPDATE_URL=http://127.0.0.1:8766/latest.json "$old_app/Contents/MacOS/ProxySwitch" >"$RUNNER_TEMP/legacy-launch.log" 2>&1 &
 wait_for 30 "旧程序检查到假发布" fixture_requested 8766 /latest.json
 # proxyswitch:// 这次的程序也认，用 -a 指定交给旧版本。
 open_app_url "$old_app" "proxyswitch://update"
