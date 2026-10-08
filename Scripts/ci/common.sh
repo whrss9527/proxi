@@ -47,7 +47,7 @@ show_settings() {
 show_panel() {
   local binary=${1:-dist/Proxi.app/Contents/MacOS/Proxi}
   open 'proxi://panel'
-  wait_json "$binary" '.interface.visibleWindows > 0'
+  wait_json "$binary" '.interface.panelVisible == true'
 }
 file_contains() { grep -q -- "$2" "$1"; }
 file_not_contains() { ! grep -q -- "$2" "$1"; }

@@ -224,6 +224,7 @@ final class ControlService: ObservableObject {
             "english": AppLanguage.isEnglish,
             "language": LanguageSetting.current.rawValue,
             "visibleWindows": NSApp?.windows.filter { $0.isVisible && $0.frame.width > 100 && $0.frame.height > 50 }.count ?? 0,
+            "panelVisible": NSApp?.windows.contains { $0 is PanelWindow && $0.isVisible } ?? false,
             "settingsVisible": settings.isShowing,
             "settingsPage": settings.navigation.page.rawValue,
         ] as [String: Any]

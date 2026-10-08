@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.start()
         controller.updateIcon()
         Log.info("Proxi 已启动，版本 \(UpdateChecker.currentVersion)")
-        // CI 按这一行确认界面语言（sample 是菜单里「设置…」的译文）。
+        // 日志也记录界面语言，便于人工诊断；CI 通过状态接口确认实际语言。
         Log.info("界面语言 english=\(AppLanguage.isEnglish) setting=\(LanguageSetting.current.rawValue) sample=\"\(L("设置…"))\"")
         // 还没有任何配置（第一次打开）时显示新手引导；已经有配置的不显示。
         if state.config.profiles.isEmpty {

@@ -47,6 +47,19 @@ class HelperTests(unittest.TestCase):
                 if valid:
                     self.assertEqual(json.loads(result.stdout)['version'], '1.2.3')
 
+    def test_panel_wait_does_not_accept_an_existing_settings_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            counter = folder / 'calls'
+            cli = folder / 'fake-cli'
+            cli.write_text('#!/usr/bin/env python3\nimport json\nfrom pathlib import Path\np=Path(' + repr(str(counter)) + ')\nn=int(p.read_text())+1 if p.exists() else 1\np.write_text(str(n))\nprint(json.dumps({"interface":{"visibleWindows":1,"panelVisible":n>=3}}))\n')
+            cli.chmod(0o755)
+            # open 和进程检查只替换成测试函数；不会调用系统应用或启动 GUI。
+            body = 'open() { return 0; }; pgrep() { return 0; }; export RUNNER_TEMP=' + shlex.quote(tmp) + '; show_panel ' + shlex.quote(str(cli))
+            result = self.shell(body)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertGreaterEqual(int(counter.read_text()), 3)
+
     def test_result_gate_rejects_skipped_cancelled_and_missing(self):
         names = ['scripts', 'build', 'smoke', 'migration', 'update', 'rename', 'signing', 'extension']
         results = {name: {'result': 'success'} for name in names}
