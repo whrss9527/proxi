@@ -51,7 +51,7 @@ chmod 755 /usr/local/bin/proxyswitch
 PROXYSWITCH_UPDATE_URL=http://127.0.0.1:8766/latest.json "$old_app/Contents/MacOS/ProxySwitch" >/dev/null 2>&1 &
 wait_for 30 "旧程序检查到假发布" fixture_requested 8766 /latest.json
 # proxyswitch:// 这次的程序也认，用 -a 指定交给旧版本。
-open -a "$old_app" "proxyswitch://update"
+open_app_url "$old_app" "proxyswitch://update"
 wait_for 90 "新名字的程序已落盘" test -d "$new_app"
 wait_json "$new_app/Contents/MacOS/Proxi" '.version == "9.9.9"' 90
 echo "===== 日志（旧版本的日志挪过来后接着写） ====="

@@ -64,6 +64,12 @@ show_panel() {
   open 'proxi://panel'
   wait_json "$binary" '.interface.panelVisible == true'
 }
+# 程序已发出 HTTP 请求时，Launch Services 仍可能尚未准备好接收链接。
+# 只等到系统成功接收一次，不重复送入已经接收的更新命令。
+open_app_url() {
+  local app=$1 url=$2 timeout=${3:-30}
+  wait_for "$timeout" "应用可接收链接：$url" open -a "$app" "$url"
+}
 file_contains() { grep -q -- "$2" "$1"; }
 file_not_contains() { ! grep -q -- "$2" "$1"; }
 proxy_matches() { [[ $(git config --global --includes --get http.proxy || true) == "$1" ]]; }
@@ -90,4 +96,3 @@ assert_for() {
     sleep 0.25
   done
 }
-

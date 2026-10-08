@@ -99,6 +99,26 @@ class HelperTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('条件失效', result.stderr)
 
+    def test_app_url_waits_for_acceptance_and_stops_after_one_success(self):
+        # 用 shell 函数替代 open，不接触真实应用或 Launch Services。
+        result = self.shell('''set -e
+calls=0
+open() {
+    [[ $# == 3 && $1 == -a && $2 == "/fake/Old App.app" && $3 == proxyswitch://update ]] || return 99
+    calls=$((calls + 1))
+    ((calls >= 3))
+}
+open_app_url "/fake/Old App.app" proxyswitch://update 3
+[[ $calls == 3 ]]
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_app_url_fails_when_system_never_accepts_it(self):
+        result = self.shell('open() { return 1; }; open_app_url /fake/App.app proxyswitch://update 0')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('等待超时', result.stderr)
+        self.assertIn('proxyswitch://update', result.stderr)
+
     def status_env(self, tmp):
         return {**os.environ, 'HOME': tmp, 'RUNNER_TEMP': tmp, 'PROXI_ENGINE_DIR': ''}
 
@@ -275,4 +295,3 @@ class HelperTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
