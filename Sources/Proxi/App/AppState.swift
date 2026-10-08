@@ -43,6 +43,19 @@ enum Health: Equatable {
 /// 核心状态：配置、系统代理快照、开关操作，所有界面都观察它。只在主线程上使用。
 @MainActor
 final class AppState: ObservableObject {
+    /// 测试替换全部密码操作，不访问真实钥匙串，也不打开密码窗口。
+    struct PasswordAccess {
+        var read: @MainActor (UUID, Bool) -> String?
+        var prompt: @MainActor (Profile) -> String?
+        var save: @MainActor (String, UUID) throws -> Void
+
+        static var live: Self {
+            Self(read: { ProxyKeychain.password(for: $0, allowUI: $1) },
+                 prompt: { PasswordPrompt.ask(for: $0) },
+                 save: { try ProxyKeychain.set($0, for: $1) })
+        }
+    }
+
     static let shared = AppState()
 
     @Published var config: AppConfig
@@ -93,6 +106,9 @@ final class AppState: ObservableObject {
     let backend: ProxyBackend
     /// 配置和本机状态要不要写到磁盘上（测试时不写）。
     private let persists: Bool
+    private let passwordAccess: PasswordAccess
+    /// 开关操作的日志也可替换，假后端测试不写用户的日志文件。
+    private let operationLog: (String, Bool) -> Void
     /// 退出时最多等清理多久（见 handleExit）。
     var exitCleanupTimeout: TimeInterval = 10
 
@@ -105,7 +121,9 @@ final class AppState: ObservableObject {
     /// 测试时传假的系统后端，persists 为 false 时不写磁盘上的配置和本机状态。
     init(config: AppConfig, persisted: PersistedState, backend: ProxyBackend, legacy: LegacyCleanup.Findings = LegacyCleanup.Findings(), persists: Bool,
          reachability: @escaping (String, Int) async -> Bool = { await ProxyTester.reachable(host: $0, port: $1) },
-         healthClock: @escaping () -> Date = Date.init) {
+         healthClock: @escaping () -> Date = Date.init,
+         passwordAccess: PasswordAccess? = nil,
+         operationLog: ((String, Bool) -> Void)? = nil) {
         self.legacy = legacy
         self.config = config
         self.persisted = persisted
@@ -113,6 +131,10 @@ final class AppState: ObservableObject {
         self.persists = persists
         self.reachability = reachability
         self.healthClock = healthClock
+        self.passwordAccess = passwordAccess ?? .live
+        self.operationLog = operationLog ?? { message, error in
+            if error { Log.error(message) } else { Log.info(message) }
+        }
         snapshot = backend.currentSystemProxy()
         guard persists else { return }
         $config
@@ -499,32 +521,37 @@ final class AppState: ObservableObject {
     /// replacing：重新应用正在用的配置（在设置里改了、iCloud 同步来了新的）时传改之前的那份。这时系统代理的现状已经对不上
     /// 改过的配置，不能再从 status 推断上一个配置（改前有、改后没有的生效范围要清掉），也不能把自己设的代理当成「开启前的设置」记下来。
     func turnOn(_ profile: Profile, askForPassword: Bool = true, replacing old: Profile? = nil) {
-        guard !busy else { return }
+        guard !busy else {
+            operationLog("忽略重复开启：已有代理操作或密码提示正在进行", false) // l10n-ignore：开关操作日志
+            return
+        }
         guard !profile.isUnsupported else {
             lastError = profile.validate()
             onStatusChanged?()
             return
         }
+        // 钥匙串授权和密码框都会运行嵌套事件循环，必须在它们之前挡住快捷键、网络切换和 CLI 重入。
+        busy = true
         // 要登录的代理：密码从这台 Mac 的钥匙串里取；还没有（比如配置是从别的 Mac 同步来的）就请用户输入一次。
         var password = ""
         if profile.needsPassword {
-            if let saved = ProxyKeychain.password(for: profile.id, allowUI: askForPassword) {
+            if let saved = passwordAccess.read(profile.id, askForPassword) {
                 password = saved
-            } else if askForPassword, let entered = PasswordPrompt.ask(for: profile), !entered.isEmpty {
+            } else if askForPassword, let entered = passwordAccess.prompt(profile), !entered.isEmpty {
                 do {
-                    try ProxyKeychain.set(entered, for: profile.id)
+                    try passwordAccess.save(entered, profile.id)
                 } catch {
-                    Log.error("保存「\(profile.name)」的密码失败：\(error.localizedDescription)")
+                    operationLog("保存「\(profile.name)」的密码失败：\(error.localizedDescription)", true) // l10n-ignore：开关操作日志
                 }
                 password = entered
             } else {
+                busy = false
                 lastError = L("没有「%@」的代理密码，没有开启", profile.name)
-                Log.error("这台 Mac 的钥匙串里没有「\(profile.name)」的代理密码，没有开启")
+                operationLog("这台 Mac 的钥匙串里没有「\(profile.name)」的代理密码，没有开启", true) // l10n-ignore：开关操作日志
                 onStatusChanged?()
                 return
             }
         }
-        busy = true
         lastError = nil
         targetFailures = [:]
         let previous: Profile? = old ?? {
@@ -641,12 +668,12 @@ final class AppState: ObservableObject {
         refresh()
         onStatusChanged?()
         if failures.isEmpty {
-            Log.info("\(action) 成功")
+            operationLog("\(action) 成功", false) // l10n-ignore：开关操作日志
             lastError = nil
             notify(title: action, body: successText, problem: false)
         } else {
             let text = failures.joined(separator: L("；"))
-            Log.error("\(action) 失败：\(text)")
+            operationLog("\(action) 失败：\(text)", true) // l10n-ignore：开关操作日志
             lastError = text
             notify(title: L("%@时出错", action), body: text, problem: true)
         }
