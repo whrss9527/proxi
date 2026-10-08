@@ -106,8 +106,10 @@ final class SettingsWindowHandoffTests: XCTestCase {
     func testUnansweredHandoffRestoresBothWindowsAfterTimeout() async throws {
         let outgoing = makeWindow()
         let incoming = makeWindow()
-        let source = SettingsWindowHandoff(window: outgoing)
-        let destination = SettingsWindowHandoff(window: incoming)
+        var sourceTimeouts = 0
+        var destinationTimeouts = 0
+        let source = SettingsWindowHandoff(window: outgoing) { sourceTimeouts += 1 }
+        let destination = SettingsWindowHandoff(window: incoming) { destinationTimeouts += 1 }
         defer { source.cancel(); destination.cancel(); outgoing.close(); incoming.close() }
         outgoing.orderFront(nil)
         let frame = try XCTUnwrap(outgoing.contentView?.superview)
@@ -116,6 +118,8 @@ final class SettingsWindowHandoffTests: XCTestCase {
         let request = destination.beginShowing()
         incoming.orderFront(nil)
         try await Task.sleep(nanoseconds: 5_200_000_000)
+        XCTAssertEqual(sourceTimeouts, 1)
+        XCTAssertEqual(destinationTimeouts, 1)
         XCTAssertEqual(frame.subviews.count, originalCount)
         XCTAssertTrue(outgoing.isVisible)
         XCTAssertFalse(incoming.isVisible)

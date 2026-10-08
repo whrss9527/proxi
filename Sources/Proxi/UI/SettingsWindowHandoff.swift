@@ -11,9 +11,11 @@ final class SettingsWindowHandoff {
     private var timeout: DispatchWorkItem?
     private var generation: UInt = 0
     private var pendingPresentation: UInt?
+    private let onTimeout: () -> Void
 
-    init(window: NSWindow) {
+    init(window: NSWindow, onTimeout: @escaping () -> Void = {}) {
         self.window = window
+        self.onTimeout = onTimeout
     }
 
     /// 在让出激活权之前调用；覆盖整个框架视图，标题栏也不能先变成失焦外观。
@@ -81,6 +83,7 @@ final class SettingsWindowHandoff {
             MainActor.assumeIsolated {
                 guard let self, self.generation == expected else { return }
                 self.cancel()
+                self.onTimeout()
             }
         }
         timeout = work

@@ -181,7 +181,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         if window == nil {
             let created = makeWindow()
             window = created
-            handoff = SettingsWindowHandoff(window: created)
+            handoff = SettingsWindowHandoff(window: created) { [weak self] in
+                // 目标未能接手时，侧栏也恢复到仍然显示的本地页面。
+                self?.presentationRequest = nil
+                self?.navigation.didShow()
+            }
         }
         // 从 Proxi 的设置窗口切过来时放在同一个位置、同样大小。
         if let window, !window.isVisible, let frame = SettingsWindowSync.savedFrame() {
