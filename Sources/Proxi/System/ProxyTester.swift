@@ -144,62 +144,84 @@ enum LocalProxyDetector {
         var process: String
     }
 
-    /// 解析 lsof -nP -iTCP -sTCP:LISTEN -F pcn 的输出：每个进程一行 p<pid>、一行 c<命令名>，之后每个监听地址一行 n<地址:端口>。
-    static func parseLsof(_ output: String) -> [Listener] {
+    /// 按表头找列，兼容旧系统的 pid 和新系统的 process:pid；地址里的最后一个点分隔端口。
+    static func parseNetstat(_ output: String, processName: (Int32) -> String = { _ in "" }) -> [Listener] {
+        var columns: [String] = []
         var listeners: [Listener] = []
-        var process = ""
         var seen = Set<Int>()
         for line in output.split(separator: "\n") {
-            guard let first = line.first else { continue }
-            let rest = String(line.dropFirst())
-            switch first {
-            case "p": process = ""
-            case "c": process = rest
-            case "n":
-                if let colon = rest.lastIndex(of: ":"), let port = Int(rest[rest.index(after: colon)...]), seen.insert(port).inserted {
-                    listeners.append(Listener(port: port, process: process))
-                }
-            default: break
-            }
+            let fields = line.replacingOccurrences(of: "Local Address", with: "Local-Address")
+                .replacingOccurrences(of: "Foreign Address", with: "Foreign-Address")
+                .split(whereSeparator: \.isWhitespace).map(String.init)
+            if fields.first == "Proto" { columns = fields; continue }
+            guard fields.first?.hasPrefix("tcp") == true,
+                  let local = columns.firstIndex(of: "Local-Address"),
+                  let state = columns.firstIndex(of: "(state)"),
+                  let owner = columns.firstIndex(of: "pid") ?? columns.firstIndex(of: "process:pid"),
+                  fields.count > max(local, max(state, owner)), fields[state] == "LISTEN",
+                  let dot = fields[local].lastIndex(of: "."),
+                  let port = Int(fields[local][fields[local].index(after: dot)...]),
+                  (1...65535).contains(port), seen.insert(port).inserted else { continue }
+            let pid = Int32(fields[owner].split(separator: ":").last ?? "") ?? 0
+            listeners.append(Listener(port: port, process: pid > 0 ? processName(pid) : ""))
         }
         return listeners
     }
 
     static func listeners() async -> [Listener] {
-        let result = try? await Shell.run("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"], timeout: 15)
-        return parseLsof(result?.output ?? "")
+        let result = try? await Shell.run("/usr/sbin/netstat", ["-anv", "-p", "tcp"], timeout: 0.5)
+        return parseNetstat(result?.output ?? "") { pid in
+            var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+            guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return "" }
+            return URL(fileURLWithPath: String(cString: buffer)).lastPathComponent
+        }
     }
 
-    /// 找出能当代理用的本机端口：先看监听列表和常见端口，再逐个经它访问测速地址确认。
+    /// 查询、补查和协议探测共用截止时间；没有响应的端口不会让整个检测等待数秒。
     static func detect(testURL: String) async -> [DetectedProxy] {
+        let started = ProcessInfo.processInfo.systemUptime
+        defer { Log.info(String(format: "本机代理检测耗时 %.3f 秒", ProcessInfo.processInfo.systemUptime - started)) }
+        return await detect(testURL: testURL, listeners: listeners,
+                     reachable: { await ProxyTester.reachable(host: "127.0.0.1", port: $0, timeout: $1) },
+                     probe: { await ProxyTester.test(profile: $0, testURL: $1, timeout: $2) })
+    }
+
+    static func detect(testURL: String, listeners: () async -> [Listener],
+                       reachable: @escaping (Int, TimeInterval) async -> Bool,
+                       probe: @escaping (Profile, String, TimeInterval) async -> TestResult) async -> [DetectedProxy] {
+        let started = ProcessInfo.processInfo.systemUptime
+        let deadline = started + 2.7
         var candidates: [Int: String] = [:]
-        for listener in await listeners() where listener.port > 0 {
+        for listener in await listeners() where (1...65535).contains(listener.port) {
             candidates[listener.port] = listener.process
         }
-        for port in commonPorts where candidates[port] == nil {
-            if await ProxyTester.reachable(host: "127.0.0.1", port: port, timeout: 0.5) {
-                candidates[port] = ""
+        await withTaskGroup(of: Int?.self) { group in
+            let timeout = min(0.2, max(0, deadline - ProcessInfo.processInfo.systemUptime))
+            guard timeout > 0 else { return }
+            for port in commonPorts where candidates[port] == nil {
+                group.addTask { await reachable(port, timeout) ? port : nil }
             }
+            for await port in group { if let port { candidates[port] = "" } }
         }
-        var found: [DetectedProxy] = []
+        var found: [Int: DetectedProxy] = [:]
         await withTaskGroup(of: DetectedProxy?.self) { group in
+            let timeout = min(2, max(0, deadline - ProcessInfo.processInfo.systemUptime))
+            guard timeout > 0 else { return }
             for (port, process) in candidates {
-                group.addTask {
-                    for kind in [ProxyKind.http, ProxyKind.socks5] {
-                        var profile = Profile(name: "", color: "", kind: kind, host: "127.0.0.1", port: port)
-                        profile.kind = kind
-                        let result = await ProxyTester.test(profile: profile, testURL: testURL, timeout: 4)
-                        if result.ok {
-                            return DetectedProxy(host: "127.0.0.1", port: port, kind: kind, process: process, latencyMs: result.latencyMs)
-                        }
+                for kind in [ProxyKind.http, .socks5] {
+                    group.addTask {
+                        let profile = Profile(name: "", color: "#16a34a", kind: kind, host: "127.0.0.1", port: port)
+                        let result = await probe(profile, testURL, timeout)
+                        guard result.ok else { return nil }
+                        return DetectedProxy(host: "127.0.0.1", port: port, kind: kind, process: process, latencyMs: result.latencyMs)
                     }
-                    return nil
                 }
             }
             for await item in group {
-                if let item { found.append(item) }
+                // 两种协议都可用时沿用 HTTP 优先的顺序，不由任务完成先后决定。
+                if let item, found[item.port] == nil || item.kind == .http { found[item.port] = item }
             }
         }
-        return found.sorted { $0.port < $1.port }
+        return found.values.sorted { $0.port < $1.port }
     }
 }
