@@ -12,13 +12,13 @@ final class SettingsWindowHandoffTests: XCTestCase {
         window.orderFront(nil)
 
         XCTAssertEqual(window.alphaValue, 0)
-        XCTAssertFalse(handoff.finishShowing(request, applicationIsActive: true))
+        XCTAssertFalse(handoff.finishShowing(request, applicationIsActive: true, visibleOnScreen: { _ in true }))
         window.reportsKey = true
-        XCTAssertFalse(handoff.finishShowing(request, applicationIsActive: false))
+        XCTAssertFalse(handoff.finishShowing(request, applicationIsActive: false, visibleOnScreen: { _ in true }))
         XCTAssertEqual(window.alphaValue, 0)
-        XCTAssertTrue(handoff.finishShowing(request, applicationIsActive: true))
+        XCTAssertTrue(handoff.finishShowing(request, applicationIsActive: true, visibleOnScreen: { _ in true }))
         XCTAssertEqual(window.alphaValue, 1)
-        XCTAssertFalse(handoff.finishShowing(request, applicationIsActive: true))
+        XCTAssertFalse(handoff.finishShowing(request, applicationIsActive: true, visibleOnScreen: { _ in true }))
     }
 
     @MainActor
@@ -31,14 +31,14 @@ final class SettingsWindowHandoffTests: XCTestCase {
         window.orderFront(nil)
         window.reportsKey = true
 
-        XCTAssertFalse(handoff.finishShowing(old, applicationIsActive: true))
+        XCTAssertFalse(handoff.finishShowing(old, applicationIsActive: true, visibleOnScreen: { _ in true }))
         XCTAssertEqual(window.alphaValue, 0)
         window.orderOut(nil)
-        XCTAssertFalse(handoff.finishShowing(current, applicationIsActive: true))
+        XCTAssertFalse(handoff.finishShowing(current, applicationIsActive: true, visibleOnScreen: { _ in true }))
         handoff.cancel()
         XCTAssertEqual(window.alphaValue, 1)
         window.orderFront(nil)
-        XCTAssertFalse(handoff.finishShowing(current, applicationIsActive: true))
+        XCTAssertFalse(handoff.finishShowing(current, applicationIsActive: true, visibleOnScreen: { _ in true }))
     }
 
     @MainActor
@@ -51,7 +51,7 @@ final class SettingsWindowHandoffTests: XCTestCase {
         let request = handoff.beginShowing()
         XCTAssertTrue(window.isVisible)
         XCTAssertEqual(window.alphaValue, 1)
-        XCTAssertTrue(handoff.finishShowing(request, applicationIsActive: true))
+        XCTAssertTrue(handoff.finishShowing(request, applicationIsActive: true, visibleOnScreen: { _ in true }))
     }
 
     @MainActor
@@ -126,7 +126,40 @@ final class SettingsWindowHandoffTests: XCTestCase {
         XCTAssertEqual(incoming.alphaValue, 1)
         incoming.reportsKey = true
         incoming.orderFront(nil)
-        XCTAssertFalse(destination.finishShowing(request, applicationIsActive: true))
+        XCTAssertFalse(destination.finishShowing(request, applicationIsActive: true, visibleOnScreen: { _ in true }))
+    }
+
+    @MainActor
+    func testDoesNotAcknowledgeBeforeWindowServerHasPresentedTheWindow() {
+        let window = makeWindow()
+        let handoff = SettingsWindowHandoff(window: window)
+        defer { handoff.cancel(); window.close() }
+        let request = handoff.beginShowing()
+        window.orderFront(nil)
+        window.reportsKey = true
+        XCTAssertFalse(handoff.finishShowing(request, applicationIsActive: true, visibleOnScreen: { _ in false }))
+        // AppKit 已经记下 alpha=1，显示服务器仍未显现时不能让源窗口消失。
+        XCTAssertEqual(window.alphaValue, 1)
+        XCTAssertTrue(handoff.finishShowing(request, applicationIsActive: true, visibleOnScreen: { _ in true }))
+    }
+
+    @MainActor
+    func testAcknowledgementMatchesActualWindowServerVisibility() async throws {
+        let window = makeWindow()
+        let handoff = SettingsWindowHandoff(window: window)
+        defer { handoff.cancel(); window.close() }
+        let request = handoff.beginShowing()
+        window.orderFront(nil)
+        window.reportsKey = true
+        let deadline = Date().addingTimeInterval(2)
+        var acknowledged = false
+        repeat {
+            acknowledged = handoff.finishShowing(request, applicationIsActive: true)
+            if acknowledged { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        } while Date() < deadline
+        XCTAssertTrue(acknowledged)
+        XCTAssertTrue(SettingsWindowHandoff.isVisibleOnScreen(window))
     }
 
     @MainActor

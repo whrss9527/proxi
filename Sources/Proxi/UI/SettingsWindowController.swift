@@ -199,9 +199,17 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func announceWhenReady() {
         guard let request = presentationRequest else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive) == true else { return }
-            self.presentationRequest = nil
-            SettingsWindowSync.announceShown()
+            guard let self, self.presentationRequest == request else { return }
+            if self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive) == true {
+                self.presentationRequest = nil
+                SettingsWindowSync.announceShown()
+            } else if let window = self.window, window.isVisible, window.isKeyWindow, NSApp.isActive {
+                // 等显示服务器确认显现；不是用固定延时猜测目标窗口已经画好。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 120) { [weak self] in
+                    guard self?.presentationRequest == request else { return }
+                    self?.announceWhenReady()
+                }
+            }
         }
     }
 

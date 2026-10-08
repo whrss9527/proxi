@@ -31,7 +31,7 @@ func checkPolicies() {
         }
     }
     guard !visibleSettingsWindows().isEmpty else {
-        fatalError("设置交接期间两个窗口都不可见，露出了桌面")
+        fatalError("设置交接期间两个窗口都不可见，露出了桌面；采样 \(samples)，前台 \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil")")
     }
     samples += 1
 }

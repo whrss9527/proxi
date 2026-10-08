@@ -11,6 +11,7 @@ final class SettingsWindowHandoff {
     private var timeout: DispatchWorkItem?
     private var generation: UInt = 0
     private var pendingPresentation: UInt?
+    private var showingFromHidden = false
     private let onTimeout: () -> Void
 
     init(window: NSWindow, onTimeout: @escaping () -> Void = {}) {
@@ -42,22 +43,27 @@ final class SettingsWindowHandoff {
     func beginShowing() -> UInt {
         cancel()
         pendingPresentation = generation
-        if let window, !window.isVisible {
-            window.alphaValue = 0
+        showingFromHidden = window?.isVisible == false
+        if showingFromHidden {
+            window?.alphaValue = 0
         }
         armTimeout()
         return generation
     }
 
     /// 过期或重复的回调不能把新一轮交接中的窗口显现出来，也不能通知对方隐藏。
-    func finishShowing(_ request: UInt, applicationIsActive: Bool) -> Bool {
+    func finishShowing(_ request: UInt, applicationIsActive: Bool,
+                       visibleOnScreen: ((NSWindow) -> Bool)? = nil) -> Bool {
         guard pendingPresentation == request, let window,
               window.isVisible, window.isKeyWindow, applicationIsActive else { return false }
         window.contentView?.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         CATransaction.flush()
         window.alphaValue = 1
+        // alphaValue 的赋值和 WindowServer 的实际显现不同步；旧窗口必须留到后者完成。
+        guard visibleOnScreen?(window) ?? Self.isVisibleOnScreen(window) else { return false }
         pendingPresentation = nil
+        showingFromHidden = false
         timeout?.cancel()
         timeout = nil
         return true
@@ -71,10 +77,20 @@ final class SettingsWindowHandoff {
         timeout = nil
         cover?.removeFromSuperview()
         cover = nil
-        if let window, window.alphaValue == 0 {
+        if let window, showingFromHidden {
             window.orderOut(nil)
             window.alphaValue = 1
         }
+        showingFromHidden = false
+    }
+
+    static func isVisibleOnScreen(_ window: NSWindow) -> Bool {
+        guard window.windowNumber > 0,
+              let windows = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(window.windowNumber)) as? [[String: Any]],
+              let info = windows.first,
+              (info[kCGWindowIsOnscreen as String] as? Bool) == true,
+              let alpha = info[kCGWindowAlpha as String] as? Double else { return false }
+        return alpha >= 0.99
     }
 
     private func armTimeout() {
