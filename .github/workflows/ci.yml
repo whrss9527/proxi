@@ -1,1003 +1,289 @@
 name: ci
 
-# 合并请求和推到 main 时：编译、单元测试、打包 .app，启动一次并截图（产物里有截图，日志里也有 base64 版本）。
-# 本仓库分支开的合并请求测试通过后自动合并进 main；合并后（或者直接推 main 测试通过后）
-# CHANGELOG.md 最上面的版本还没有发布，就自动打标签、打包并发布。
-# 分支上的推送不单独跑：合并请求那次已经测了，再跑一次的话同一个提交上会有两个「编译、测试、打包」，
-# 自动合并时另一个还在排队，分支保护就不让合并。
+# 编译产物只有一份，系统、更新和扩展检查在独立 runner 上并行运行。
 on:
   push:
-    branches: ["main"]
+    branches: [main]
   pull_request:
-    # 草稿转成正式的合并请求时也要跑，才能自动合并。
     types: [opened, synchronize, reopened, ready_for_review]
 
+permissions:
+  contents: read
+
 jobs:
-  macos:
-    name: 编译、测试、打包
-    runs-on: macos-15
+  scripts:
+    name: CI 脚本检查
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: 选择最新的 Xcode
-        run: |
-          latest=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
-          sudo xcode-select -s "$latest"
-          xcodebuild -version
-          swift --version
-      - name: 检查界面文字的翻译
-        # 代码里的中文都经过 L()，英文和简体中文的翻译表和代码一致。
+      - name: 检查脚本和轮询
+        run: bash Scripts/ci/check-scripts.sh
+
+  build:
+    name: 编译和单元测试
+    needs: scripts
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 选择 Xcode
+        run: bash Scripts/ci/select-xcode.sh
+      - name: 检查翻译
         run: python3 Scripts/check-localization.py
-      - name: 公开的文字里不提可选扩展的内容
-        run: |
-          # README、docs（docs/extension.md 除外）、CHANGELOG 最上面一节（发布说明就是它）、扩展关着时也会显示的界面文字（Proxi 的翻译表和 Info.plist）。
-          words='机场|翻墙|科学上网|GFW|VPN|netflix|youtube|chatgpt|telegram|流媒体'
-          awk '/^## /{n++} n==1' CHANGELOG.md > "$RUNNER_TEMP/changelog-top.md"
-          files=(README.md README.zh-CN.md "$RUNNER_TEMP/changelog-top.md" Resources/en.lproj/*.strings Resources/zh-Hans.lproj/*.strings Resources/Info.plist)
-          for f in docs/*.md; do [ "$f" = docs/extension.md ] || files+=("$f"); done
-          if grep -n -i -E "$words" "${files[@]}"; then echo "上面这些公开的文字里不该出现这些词"; exit 1; fi
-          # 发布说明（CHANGELOG 最上面一节）只说设置里多了「扩展」页，不写它是什么。
-          if grep -n -E '代理引擎|Proxi-Engine|mihomo|内核|订阅|节点' "$RUNNER_TEMP/changelog-top.md"; then echo "发布说明里不该介绍扩展"; exit 1; fi
-          for f in README.md README.zh-CN.md docs/guide.md docs/automation.md docs/development.md; do
-            if grep -n -E 'extension\.md|代理引擎|Proxy Engine|mihomo' "$f"; then echo "$f 里不该提扩展"; exit 1; fi
-          done
-          echo "公开的文字检查通过"
+      - name: 检查公开的文字
+        run: bash Scripts/ci/check-public.sh
       - name: 编译
-        run: |
-          # 出错时把去重后的错误打在最后（警告很多，原样输出会把错误淹没）。
-          if ! swift build > "$RUNNER_TEMP/build.log" 2>&1; then
-            grep -E "^/.*error:" "$RUNNER_TEMP/build.log" | sort -u | head -150 | tee "$RUNNER_TEMP/build-errors.txt"
-            echo "::error title=编译错误::$(head -60 "$RUNNER_TEMP/build-errors.txt" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
-            exit 1
-          fi
-          grep -E "error:" "$RUNNER_TEMP/build.log" | sort -u | head -20 || true
-      - name: 安装 fish（验证三种 shell 的提示符钩子）
+        run: bash Scripts/ci/build.sh
+      - name: 安装 fish
         run: brew install fish
       - name: 单元测试
-        run: |
-          set -o pipefail
-          # 顺便把菜单栏图标各种状态的对照图画出来，最后一步打进日志。
-          # Team ID 的比对必须拿 runner 上真实的 Developer ID 程序测到，不许跳过。
-          mkdir -p screenshots
-          # 代理引擎的单元测试会写它的日志：放到临时目录，不和后面冒烟测试的数据目录混在一起。
-          if ! PROXI_ENGINE_DIR="$RUNNER_TEMP/engine-tests" PROXI_ICON_PREVIEW_DIR="$PWD/screenshots" PROXI_REQUIRE_SIGNED_SAMPLE=1 PROXI_REQUIRE_FISH=1 swift test > "$RUNNER_TEMP/test.log" 2>&1; then
-            # 失败时只打错误和没通过的测试（编译警告很多）。
-            grep -E "^/.*error:|error: -\[|failed \(|Executed [0-9]+ tests" "$RUNNER_TEMP/test.log" | sort -u | head -150 | tee "$RUNNER_TEMP/test-errors.txt"
-            echo "::error title=单元测试失败::$(head -60 "$RUNNER_TEMP/test-errors.txt" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
-            exit 1
-          fi
-          grep -E "testCodeSignatureTeam|Executed [0-9]+ tests" "$RUNNER_TEMP/test.log" | tail -3 > screenshots/summary.txt || true
-      - name: 打包 .app（本机架构）
-        run: |
-          VERSION=0.0.0 ARCHS="" THIN_ARCHIVES=1 Scripts/build-app.sh
-          [ -f dist/Proxi-macos-arm64.zip ] || { echo "没有生成 arm64 精简包"; exit 1; }
-          [ "$(lipo -archs dist/thin-arm64/Proxi.app/Contents/MacOS/Proxi)" = "arm64" ] || { echo "精简包里的程序不是单架构"; exit 1; }
-          # 程序里只有 Proxi 自己一个可执行文件，没有别的打包进来的程序。
-          [ "$(ls dist/Proxi.app/Contents/MacOS)" = "Proxi" ] || { ls -la dist/Proxi.app/Contents/MacOS; echo "Contents/MacOS 里多了别的文件"; exit 1; }
-          # 两个程序里都没有内核和 GeoIP 数据库（代理引擎第一次运行时才下载）。
-          engine_app="dist/Proxi Engine.app"
-          [ -d "$engine_app" ] || { echo "没有组装代理引擎"; exit 1; }
-          [ "$(ls "$engine_app/Contents/MacOS")" = "ProxiEngine" ] || { ls -la "$engine_app/Contents/MacOS"; echo "代理引擎里多了别的可执行文件"; exit 1; }
-          found=$(find dist/Proxi.app "$engine_app" \( -iname '*mihomo*' -o -iname '*.mmdb' -o -iname '*clash*' \) -print)
-          [ -z "$found" ] || { echo "程序里打包了内核或 GeoIP 数据库：$found"; exit 1; }
-          for bin in dist/Proxi.app/Contents/MacOS/* "$engine_app"/Contents/MacOS/*; do
-            if file "$bin" | grep -qi "go buildid" || strings -a "$bin" | grep -q "^go1\.[0-9]"; then echo "$bin 像是 Go 写的内核"; exit 1; fi
-          done
-          # Proxi.app 里没有代理引擎的代码：引擎特有的类型名和内核配置的写法在 Proxi 的二进制里都找不到（在代理引擎的二进制里能找到，确认这个检查有效）。
-          markers='CoreConfigBuilder|ConfigImporter|HelperDaemon|RuleConverter|proxy-groups|rule-providers|mixed-port|PolicyGroupKind'
-          if strings -a dist/Proxi.app/Contents/MacOS/Proxi | grep -E "$markers" | head -5 | grep .; then echo "Proxi.app 里有代理引擎的代码"; exit 1; fi
-          [ "$(strings -a "$engine_app/Contents/MacOS/ProxiEngine" | grep -cE "$markers")" -gt 0 ] || { echo "检查方法不对：代理引擎的二进制里也找不到这些名字"; exit 1; }
-          # 菜单栏上只有 Proxi 一个图标：代理引擎不建自己的菜单栏图标（Proxi 的二进制里有，确认这个检查有效）。
-          proxi_imports=$(nm -u dist/Proxi.app/Contents/MacOS/Proxi)
-          engine_imports=$(nm -u "$engine_app/Contents/MacOS/ProxiEngine")
-          grep -qF 'OBJC_CLASS_$_NSStatusBar' <<< "$proxi_imports" || { echo "检查方法不对：Proxi 的二进制里也找不到 NSStatusBar"; exit 1; }
-          if grep -F 'OBJC_CLASS_$_NSStatusBar' <<< "$engine_imports"; then echo "代理引擎不该有自己的菜单栏图标"; exit 1; fi
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$engine_app/Contents/Info.plist")" = "com.whrss9527.proxyswitch.engine" ] || { echo "代理引擎的标识不对"; exit 1; }
-          [ -f dist/Proxi-Engine-0.0.0.zip ] || { echo "没有生成代理引擎的压缩包"; exit 1; }
-          codesign -dv "$engine_app" 2>&1 | grep -q 'flags=.*runtime' || { echo "代理引擎没有开 hardened runtime"; exit 1; }
-          echo "程序大小：Proxi.app $(du -sh dist/Proxi.app | cut -f1)，Proxi Engine.app $(du -sh "$engine_app" | cut -f1)" | tee -a screenshots/summary.txt
-          [ -f dist/Proxi.app/Contents/Resources/donate-wechat.png ] || { echo "关于页的赞赏码没有打包进去"; exit 1; }
-          for lang in en zh-Hans; do
-            for table in Localizable InfoPlist; do
-              plutil -lint "dist/Proxi.app/Contents/Resources/$lang.lproj/$table.strings" || { echo "$lang 的 $table.strings 没有打包进去或者格式不对"; exit 1; }
-            done
-          done
-          # 程序开着 hardened runtime（公证要求），后面的冒烟和更新测试跑的就是这种运行方式。
-          for code in dist/Proxi.app dist/thin-arm64/Proxi.app; do
-            codesign -dv "$code" 2>&1 | grep -q 'flags=.*runtime' || { codesign -dv "$code"; echo "$code 没有开 hardened runtime"; exit 1; }
-          done
-          ls -la dist/*.zip
-      - name: 冒烟启动并截图
-        run: |
-          # 输出另存一份：失败时最后一步把末尾打在日志最后（前面是几万行截图）。
-          exec > >(tee "$RUNNER_TEMP/smoke.log") 2>&1
-          support="$HOME/Library/Application Support/Proxi"
-          mkdir -p "$support" screenshots
-          # 单元测试也写过日志，从干净的日志开始。
-          : > "$support/proxi.log"
-          # runner 的系统语言是英文。下面的检查和截图用中文界面：先在 Proxi 自己的偏好设置里把界面语言选成简体中文
-          # （和设置 → 通用 → 界面语言选「简体中文」一样）；英文界面在下一步单独启动。
-          defaults write com.whrss9527.proxyswitch AppleLanguages -array zh-Hans
-          # 预置几套配置，面板里有内容可看。「开发代理」只设终端环境变量、git 和 npm（不动 runner 的系统代理），还要登录：
-          # 配置里只有 hasPassword，密码放在钥匙串里。用一个临时钥匙串（知道它的密码才能设访问分区），
-          # 允许这次打包的程序读（按它的 cdhash），免得测试时弹出钥匙串的授权对话框。
-          kc="$RUNNER_TEMP/proxi-ci.keychain-db"
-          security create-keychain -p ci "$kc"
-          security unlock-keychain -p ci "$kc"
-          security set-keychain-settings "$kc"
-          echo "$(security list-keychains -d user | tr -d '"' | xargs)" > "$RUNNER_TEMP/keychains-before"
-          security list-keychains -d user -s "$kc" $(cat "$RUNNER_TEMP/keychains-before")
-          cdhash=$(codesign -dvvv dist/Proxi.app 2>&1 | awk -F= '/^CDHash=/{print $2; exit}')
-          security add-generic-password -U -A -T dist/Proxi.app/Contents/MacOS/Proxi -s com.whrss9527.proxyswitch -a 6D2F2A1E-0000-4000-8000-000000000003 -l "Proxi 代理密码" -w 'p@ss word' "$kc"
-          security set-generic-password-partition-list -S "apple-tool:,apple:,unsigned:,cdhash:$cdhash" -s com.whrss9527.proxyswitch -k ci "$kc" >/dev/null
-          cat > "$support/config.json" <<'JSON'
-          {"profiles":[{"id":"6D2F2A1E-0000-4000-8000-000000000001","name":"Charles","color":"#16a34a","kind":"http","host":"127.0.0.1","port":8888},
-                       {"id":"6D2F2A1E-0000-4000-8000-000000000002","name":"公司代理","color":"#2563eb","kind":"http","host":"proxy.corp.example","port":3128},
-                       {"id":"6D2F2A1E-0000-4000-8000-000000000003","name":"开发代理","color":"#7c3aed","kind":"http","host":"devproxy.example","port":8080,
-                        "targets":["environment","git","npm"],"username":"dev","hasPassword":true,"noProxy":"localhost,.corp.example"}]}
-          JSON
-          # 假装 iCloud 云盘里已经有另一台 Mac 同步上来的配置（多一套「iCloud 来的」），并且本机记录着同步已开启。
-          cloud="$RUNNER_TEMP/fake-icloud"
-          mkdir -p "$cloud"
-          cat > "$cloud/config.json" <<'JSON'
-          {"format":1,"updatedAt":"2026-09-24T00:00:00Z","device":"另一台 Mac",
-           "config":{"profiles":[{"id":"6D2F2A1E-0000-4000-8000-000000000001","name":"Charles","color":"#16a34a","kind":"http","host":"127.0.0.1","port":8888},
-                                 {"id":"6D2F2A1E-0000-4000-8000-000000000002","name":"公司代理","color":"#2563eb","kind":"http","host":"proxy.corp.example","port":3128},
-                                 {"id":"6D2F2A1E-0000-4000-8000-000000000003","name":"开发代理","color":"#7c3aed","kind":"http","host":"devproxy.example","port":8080,
-                                  "targets":["environment","git","npm"],"username":"dev","hasPassword":true,"noProxy":"localhost,.corp.example"},
-                                 {"id":"6D2F2A1E-0000-4000-8000-000000000004","name":"iCloud 来的","color":"#db2777","kind":"socks5","host":"10.0.0.8","port":1080}]}}
-          JSON
-          echo '{"syncEnabled":true}' > "$support/state.json"
-          echo "PROXI_SYNC_DIR=$cloud" >> "$GITHUB_ENV"
-          # 直接运行 .app 里的二进制，环境变量才能传进去；系统仍把它当作 dist/Proxi.app 在运行，proxi:// 命令照常送达。
-          # 离线的 env / shell-init 不会启动 GUI；状态关闭时清理当前 shell 的旧变量。
-          (
-            export http_proxy=old NO_PROXY=old
-            eval "$(dist/Proxi.app/Contents/MacOS/Proxi env --shell bash)"
-            [ -z "${http_proxy+x}" ] && [ -z "${NO_PROXY+x}" ] || { echo "离线 env 没清理变量"; exit 1; }
-          )
-          pgrep -x Proxi >/dev/null && { echo "env 不该启动 GUI"; exit 1; }
-          PROXI_SYNC_DIR="$cloud" dist/Proxi.app/Contents/MacOS/Proxi >/dev/null 2>&1 &
-          sleep 8
-          if ! pgrep -x Proxi >/dev/null; then
-            echo "程序没有在运行"
-            cat "$support/proxi.log" || true
-            exit 1
-          fi
-          # 面板打开前先拍一张整屏，留着裁出菜单栏右半边看图标和网速。
-          screencapture -x screenshots/desktop.png || true
-          open "proxi://panel"; sleep 3
-          screencapture -x screenshots/panel.png || true
-          open "proxi://settings"; sleep 4
-          screencapture -x screenshots/settings.png || true
-          open "proxi://settings?page=sync"; sleep 3
-          screencapture -x screenshots/sync.png || true
-          open "proxi://settings?page=automation"; sleep 3
-          screencapture -x screenshots/automation.png || true
-          open "proxi://settings?page=general"; sleep 3
-          screencapture -x screenshots/general.png || true
-          open "proxi://settings?page=extensions"; sleep 3
-          screencapture -x screenshots/extensions.png || true
-          echo "===== 程序日志 ====="; cat "$support/proxi.log" || true
-          grep -q "应用了来自 另一台 Mac 的配置" "$support/proxi.log" || { echo "没有从假 iCloud 拉到配置"; exit 1; }
-          grep -q '界面语言 english=false setting=simplifiedChinese sample="设置…"' "$support/proxi.log" || { echo "界面选了简体中文，应该是中文"; exit 1; }
-          grep -q "iCloud 来的" "$support/config.json" || { echo "拉到的配置没有写到本机"; cat "$support/config.json"; exit 1; }
-          grep -q "已显示后台助手的提示" "$support/proxi.log" && { echo "新装的配置不该显示提示"; exit 1; }
-          grep -q "扩展：代理引擎没有开启" "$support/proxi.log" || { echo "扩展默认应该关着"; exit 1; }
-          # 命令行、MCP 和 URL 命令：经本机控制接口操作正在运行的程序。
-          cli=dist/Proxi.app/Contents/MacOS/Proxi
-          [ -S "$support/control.sock" ] || { echo "本机控制接口没有开"; cat "$support/proxi.log"; exit 1; }
-          "$cli" status --json | tee "$RUNNER_TEMP/status.json"
-          grep -q '"proxy"' "$RUNNER_TEMP/status.json" || { echo "命令行读不到状态"; exit 1; }
-          "$cli" profiles | tee "$RUNNER_TEMP/profiles.txt"
-          grep -q "公司代理" "$RUNNER_TEMP/profiles.txt" || { echo "命令行列不出代理配置"; exit 1; }
-          # 切到「开发代理」：终端环境变量、git、npm 都指向它，带着从钥匙串里取出、转义过的用户名和密码。
-          # git 的带密码地址不经命令行，写在只有自己能读的 include 文件里。
-          expected='http://dev:p%40ss%20word@devproxy.example:8080'
-          gitproxy() { git config --global --includes --get http.proxy || true; }
-          "$cli" use 开发
-          for i in $(seq 1 20); do [ "$(gitproxy)" = "$expected" ] && break; sleep 0.5; done
-          [ "$(gitproxy)" = "$expected" ] || { echo "git 的代理不对：$(gitproxy)"; tail -20 "$support/proxi.log"; exit 1; }
-          grep -q 'p%40ss' "$HOME/.gitconfig" && { echo "~/.gitconfig 里直接写了密码"; exit 1; }
-          [ "$(stat -f %Lp "$support/git-proxy.inc")" = "600" ] || { echo "git 的 include 文件权限不对"; ls -la "$support"; exit 1; }
-          [ "$(stat -f %Lp "$HOME/.npmrc")" = "600" ] || { echo ".npmrc 里有密码，权限应该是 600"; exit 1; }
-          [ "$(launchctl getenv http_proxy)" = "$expected" ] || { echo "环境变量 http_proxy 不对：$(launchctl getenv http_proxy)"; exit 1; }
-          [ "$(launchctl getenv ALL_PROXY)" = "$expected" ] || { echo "环境变量 ALL_PROXY 不对：$(launchctl getenv ALL_PROXY)"; exit 1; }
-          [ "$(launchctl getenv no_proxy)" = "localhost,.corp.example" ] || { echo "环境变量 no_proxy 不对"; exit 1; }
-          # 在子 shell 里实际 eval，不把凭据打印进日志，也不污染测试工作流的环境。
-          (
-            eval "$("$cli" env --shell bash)"
-            [ "$http_proxy" = "$expected" ] && [ "$HTTP_PROXY" = "$expected" ] || { echo "env 命令没有刷新代理"; exit 1; }
-            [ "$no_proxy" = "localhost,.corp.example" ] || { echo "env 的绕过列表不对"; exit 1; }
-            eval "$("$cli" env --shell bash --unset)"
-            [ -z "${http_proxy+x}" ] && [ -z "${NO_PROXY+x}" ] || { echo "env --unset 没有清理变量"; exit 1; }
-          )
-          grep -q "^proxy=$expected" "$HOME/.npmrc" || { echo ".npmrc 里的代理不对"; cat "$HOME/.npmrc" || true; exit 1; }
-          "$cli" status | tee "$RUNNER_TEMP/status-on.txt"
-          grep -q "开发代理" "$RUNNER_TEMP/status-on.txt" || { echo "状态里没有正在用的配置"; exit 1; }
-          open "proxi://panel"; sleep 3
-          screencapture -x screenshots/panel-on.png || true
-          # 关掉：全部清干净。
-          "$cli" off
-          for i in $(seq 1 20); do [ -z "$(gitproxy)" ] && break; sleep 0.5; done
-          [ -z "$(gitproxy)" ] || { echo "关掉后 git 的代理还在"; exit 1; }
-          [ ! -e "$support/git-proxy.inc" ] || { echo "关掉后 git 的 include 文件还在"; exit 1; }
-          grep -q 'git-proxy.inc' "$HOME/.gitconfig" && { echo "关掉后 ~/.gitconfig 里的 include 还在"; exit 1; }
-          [ -z "$(launchctl getenv http_proxy)" ] || { echo "关掉后环境变量还在"; exit 1; }
-          [ -z "$(launchctl getenv ALL_PROXY)" ] || { echo "关掉后 ALL_PROXY 还在"; exit 1; }
-          if grep -q "^proxy=" "$HOME/.npmrc" 2>/dev/null; then echo "关掉后 .npmrc 里的代理还在"; exit 1; fi
-          # 测试连接：Charles 没在运行，应该报连不上，命令本身照常结束。
-          "$cli" test Charles | tee "$RUNNER_TEMP/test.txt"
-          grep -q "Charles" "$RUNNER_TEMP/test.txt" || { echo "测试连接没有输出"; exit 1; }
-          # MCP：初始化、列出工具、调用一个工具。
-          printf '%s\n' \
-            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
-            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-            '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_profiles","arguments":{}}}' \
-            | "$cli" mcp | tee "$RUNNER_TEMP/mcp.out"
-          grep -q '"protocolVersion":"2025-06-18"' "$RUNNER_TEMP/mcp.out" || { echo "MCP 初始化失败"; exit 1; }
-          grep -q '"name":"get_status"' "$RUNNER_TEMP/mcp.out" || { echo "MCP 没有列出工具"; exit 1; }
-          grep -q '"name":"use_profile"' "$RUNNER_TEMP/mcp.out" || { echo "MCP 没有切换配置的工具"; exit 1; }
-          grep -q 'iCloud 来的' "$RUNNER_TEMP/mcp.out" || { echo "MCP 调用工具失败"; exit 1; }
-          # 扩展关着（默认）：命令行和 MCP 只报告它没开，没有它的命令和工具。
-          grep -q '"extension"' "$RUNNER_TEMP/status.json" || { echo "状态里没有报告扩展"; exit 1; }
-          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['extension']=={'enabled': False}, d['extension']" "$RUNNER_TEMP/status.json" || { echo "扩展应该是关着的"; exit 1; }
-          if grep -qE '"name":"(list_nodes|select_node|add_subscription|set_tun|check_url)"' "$RUNNER_TEMP/mcp.out"; then echo "扩展关着时 MCP 不该有它的工具"; exit 1; fi
-          "$cli" help | grep -qiE "subscription|节点|订阅|engine|引擎" && { echo "扩展关着时命令行的用法里不该提它"; exit 1; }
-          # URL 命令经同一个接口：用改名前的写法（proxyswitch://）切到「开发代理」，它照样认。
-          open "proxyswitch://use?name=%E5%BC%80%E5%8F%91%E4%BB%A3%E7%90%86"
-          for i in $(seq 1 20); do [ "$(gitproxy)" = "$expected" ] && break; sleep 0.5; done
-          [ "$(gitproxy)" = "$expected" ] || { echo "URL 命令切换配置没有生效"; exit 1; }
-          open "proxi://off"
-          for i in $(seq 1 20); do [ -z "$(gitproxy)" ] && break; sleep 0.5; done
-          [ -z "$(gitproxy)" ] || { echo "URL 命令关闭代理没有生效"; exit 1; }
-          # 密码不出现在日志、配置文件、iCloud 同步文件和命令行的输出里。
-          sleep 2
-          "$cli" logs 500 > "$RUNNER_TEMP/logs.txt"
-          for file in "$support/proxi.log" "$support/config.json" "$support/state.json" "$cloud/config.json" "$RUNNER_TEMP/logs.txt" "$RUNNER_TEMP/status-on.txt"; do
-            if grep -qE 'p@ss|p%40ss' "$file"; then echo "$file 里有密码"; exit 1; fi
-          done
-          # 扩展关着：没有下载、没有和它有关的网络请求、没有它的文件和进程。
-          grep -q "扩展网络请求" "$support/proxi.log" && { echo "扩展关着时不该有它的网络请求"; grep "扩展网络请求" "$support/proxi.log"; exit 1; }
-          grep -qiE "mihomo|Proxi-Engine|MetaCubeX|geoip" "$support/proxi.log" && { echo "扩展关着时日志里不该出现它的下载"; exit 1; }
-          for item in Extensions engine; do
-            [ ! -e "$support/$item" ] || { echo "扩展关着时不该有 $item"; ls -la "$support/$item"; exit 1; }
-          done
-          pgrep -x ProxiEngine && { echo "扩展关着时代理引擎不该在运行"; exit 1; }
-          pgrep -x mihomo && { echo "扩展关着时内核不该在运行"; exit 1; }
-          pkill -x Proxi || true
-          sleep 3
-          security list-keychains -d user -s $(cat "$RUNNER_TEMP/keychains-before")
-          security delete-keychain "$kc" || true
-          ls -la screenshots
-          echo "冒烟测试通过"
-      - name: 从 0.12 更新过来的配置（代理引擎的数据原样保留，不弹扩展的说明）
-        run: |
-          exec > >(tee "$RUNNER_TEMP/migration.log") 2>&1
-          support="$HOME/Library/Application Support/Proxi"
-          cp "$support/config.json" "$RUNNER_TEMP/config-backup.json"
-          # 以前版本的数据：代理引擎那条配置开着（只设了 git，不动 runner 的系统代理），有订阅（本机文件，runner 上连本机端口会被「本地网络」权限拦住）、
-          # 手动节点、策略组和规则；数据目录里有 core/、imports/ 和操作记录；另外放一份假的后台助手文件（不加载），看能不能认出来。
-          mkdir -p "$RUNNER_TEMP/sub"
-          python3 - "$RUNNER_TEMP/sub/sub.txt" <<'PY'
-          import base64, sys, urllib.parse
-          uris = [f"ss://YWVzLTEyOC1nY206cGFzc3dvcmQ=@127.0.0.1:{port}#{urllib.parse.quote(name)}" for port, name in [(8388, "测试节点A"), (8389, "测试节点B")]]
-          uris.append("trojan://password@example.com:443#" + urllib.parse.quote("测试节点C"))
-          # 订阅设了「去掉 过期」：这个节点不该出现。
-          uris.append("trojan://password@example.com:443#" + urllib.parse.quote("过期节点"))
-          open(sys.argv[1], "w").write(base64.b64encode("\n".join(uris).encode()).decode())
-          PY
-          cat > "$support/config.json" <<JSON
-          {"profiles":[{"id":"6D2F2A1E-0000-4000-8000-0000000000AA","name":"节点代理","color":"#2563eb","kind":"http","host":"127.0.0.1","port":7890,"engine":true,"targets":["git"]},
-                       {"id":"6D2F2A1E-0000-4000-8000-000000000002","name":"公司代理","color":"#2563eb","kind":"http","host":"proxy.corp.example","port":3128}],
-           "engine":{"mode":"rule","mixedPort":7890,
-                     "subscriptions":[{"id":"6D2F2A1E-0000-4000-8000-00000000000A","name":"测试订阅","url":"file://$RUNNER_TEMP/sub/sub.txt","exclude":"过期"}],
-                     "groups":[{"name":"组 A","kind":"select","filter":"A|B"}],
-                     "customRules":[{"pattern":"example.net","policy":"group:组 A"},{"kind":"app","pattern":"/Applications/Safari.app","policy":"direct"}],
-                     "manualNodes":[{"link":"trojan://password@example.com:443#%E6%89%8B%E5%8A%A8%E8%8A%82%E7%82%B9D"}],
-                     "ruleSets":[]},
-           "speedDisplay":"engine","automation":{"permission":"full"}}
-          JSON
-          echo '{"lastProfileID":"6D2F2A1E-0000-4000-8000-0000000000AA","enabledByUs":true,"share":{"enabled":false,"port":7892},"traffic":{}}' > "$support/state.json"
-          git config --global http.proxy http://127.0.0.1:7890
-          git config --global https.proxy http://127.0.0.1:7890
-          mkdir -p "$support/core/rules" "$support/imports"
-          echo "x" > "$support/core/config.yaml"
-          echo "imported" > "$support/imports/nodes.txt"
-          echo '[]' > "$support/journal.json"
-          sudo mkdir -p /Library/PrivilegedHelperTools
-          sudo touch /Library/PrivilegedHelperTools/com.whrss9527.proxyswitch.helper
-          : > "$support/proxi.log"
-          dist/Proxi.app/Contents/MacOS/Proxi >/dev/null 2>&1 &
-          for i in $(seq 1 30); do grep -q "已关闭以前版本开着的代理引擎配置" "$support/proxi.log" && break; sleep 1; done
-          sleep 3
-          # 更新后不弹任何窗口：扩展的说明只在「设置 → 扩展」里打开开关时显示；有代理引擎的数据时，开启扩展还要用以前的后台助手，也不提示移除。
-          screencapture -x screenshots/upgrade.png || true
-          echo "===== 程序日志 ====="; cat "$support/proxi.log"
-          grep -q "已显示后台助手的提示" "$support/proxi.log" && { echo "有代理引擎的数据时更新后不该弹后台助手的提示"; exit 1; }
-          grep -q "以前版本的代理引擎数据已放到" "$support/proxi.log" || { echo "没有迁移代理引擎的数据"; exit 1; }
-          grep -q "已关闭以前版本开着的代理引擎配置" "$support/proxi.log" || { echo "没有先关掉以前开着的代理引擎配置"; exit 1; }
-          grep -q "以前版本的后台助手还在，扩展没开" "$support/proxi.log" || { echo "没有认出以前版本的后台助手"; exit 1; }
-          [ -z "$(git config --global --get http.proxy || true)" ] || { echo "以前版本设的 git 代理没有清掉"; exit 1; }
-          # 数据一个都没删：挪到了代理引擎的数据目录，配置原样复制，另有备份。
-          engine="$support/engine"
-          ls -la "$engine"
-          for item in config.json state.json config-0.12-backup.json state-0.12-backup.json core/config.yaml imports/nodes.txt journal.json; do
-            [ -e "$engine/$item" ] || { echo "代理引擎的数据里少了 $item"; exit 1; }
-          done
-          grep -q "测试订阅" "$engine/config.json" || { echo "订阅没有带到代理引擎的配置里"; exit 1; }
-          grep -q "手动节点" "$engine/config-0.12-backup.json" || grep -q "%E6%89%8B" "$engine/config-0.12-backup.json" || { echo "备份不完整"; exit 1; }
-          [ "$(cat "$engine/imports/nodes.txt")" = "imported" ] || { echo "imports 的内容不对"; exit 1; }
-          python3 - "$support/config.json" "$support/state.json" <<'PY' || exit 1
-          import json, sys
-          config = json.load(open(sys.argv[1]))
-          state = json.load(open(sys.argv[2]))
-          assert "engine" not in config, "Proxi 的配置里不该再有代理引擎的设置（已经挪走）"
-          assert [p["name"] for p in config["profiles"]] == ["公司代理"], config["profiles"]
-          assert config["speedDisplay"] == "system" and config["automation"]["permission"] == "operate", config
-          ext = state["extension"]
-          assert ext["enabled"] is False and "pendingMigration" not in ext and ext["restoreActive"] is True and ext["migrationChecked"] is True, ext
-          assert state["noticeShown"] is True, "有代理引擎的数据时后台助手的提示记为不用再显示"
-          assert ext["profile"]["id"] == "6D2F2A1E-0000-4000-8000-0000000000AA" and ext["profile"]["targets"] == ["git"], ext
-          assert state["enabledByUs"] is False, state
-          print("配置迁移正确")
-          PY
-          # 用户还没同意：什么都不下载，没有和扩展有关的网络请求。
-          grep -q "扩展网络请求" "$support/proxi.log" && { echo "没同意说明前不该有扩展的网络请求"; exit 1; }
-          [ ! -e "$support/Extensions" ] || { echo "没同意说明前不该下载代理引擎"; exit 1; }
-          [ ! -e "$engine/bin" ] || { echo "没同意说明前不该下载内核"; exit 1; }
-          pgrep -x ProxiEngine && { echo "没同意说明前代理引擎不该在运行"; exit 1; }
-          pkill -x Proxi || true
-          sleep 3
-          # 第二次启动也不弹窗。
-          : > "$support/proxi.log"
-          dist/Proxi.app/Contents/MacOS/Proxi >/dev/null 2>&1 &
-          for i in $(seq 1 30); do grep -q "界面语言 english=" "$support/proxi.log" && break; sleep 1; done
-          sleep 3
-          grep -q "已显示后台助手的提示" "$support/proxi.log" && { echo "第二次启动不该弹后台助手的提示"; exit 1; }
-          grep -q "扩展网络请求" "$support/proxi.log" && { echo "没同意说明前不该有扩展的网络请求"; exit 1; }
-          pkill -x Proxi || true
-          sleep 2
-          # 以前开着的配置还记着，在扩展页里开启扩展后开回来。
-          python3 -c "import json,sys; e=json.load(open(sys.argv[1]))['extension']; assert e['restoreActive'] and not e['enabled'], e" "$support/state.json" || { echo "退出后扩展的状态不对"; exit 1; }
-          sudo rm -f /Library/PrivilegedHelperTools/com.whrss9527.proxyswitch.helper
-          git config --global --unset-all https.proxy || true
-          echo "迁移测试通过"
-      - name: 开启扩展：下载代理引擎和内核，用以前的数据启动（本地假发布 + 真实的内核下载）
-        run: |
-          exec > >(tee "$RUNNER_TEMP/extension.log") 2>&1
-          support="$HOME/Library/Application Support/Proxi"
-          engine="$support/engine"
-          # 本地假发布：这次打包的代理引擎和校验和，格式和 GitHub 的发布接口一样。
-          feed="$RUNNER_TEMP/ext-feed"
-          rm -rf "$feed" && mkdir -p "$feed"
-          cp dist/Proxi-Engine-0.0.0.zip "$feed/"
-          (cd "$feed" && shasum -a 256 Proxi-Engine-0.0.0.zip > SHA256SUMS.txt && cat SHA256SUMS.txt)
-          size=$(stat -f %z "$feed/Proxi-Engine-0.0.0.zip")
-          cat > "$feed/release.json" <<JSON
-          {"tag_name":"v0.0.0","assets":[{"name":"Proxi-Engine-0.0.0.zip","size":$size,"browser_download_url":"http://127.0.0.1:8767/Proxi-Engine-0.0.0.zip"},
-                                        {"name":"SHA256SUMS.txt","size":100,"browser_download_url":"http://127.0.0.1:8767/SHA256SUMS.txt"}]}
-          JSON
-          (cd "$feed" && python3 -m http.server 8767 --bind 127.0.0.1 >/dev/null 2>&1 &)
-          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8767/release.json && break; sleep 0.5; done
-          # 用测试用的环境变量当作用户勾选了同意并开启（界面上的流程和截图在上一步）。
-          : > "$support/proxi.log"
-          PROXI_EXTENSION_FEED=http://127.0.0.1:8767/release.json PROXI_TEST_ACCEPT_EXTENSION=1 dist/Proxi.app/Contents/MacOS/Proxi >/dev/null 2>&1 &
-          for i in $(seq 1 90); do grep -q "扩展：代理引擎 0.0.0 已安装" "$support/proxi.log" && break; sleep 1; done
-          grep -q "扩展：代理引擎 0.0.0 已安装" "$support/proxi.log" || { echo "代理引擎没有装上"; cat "$support/proxi.log"; exit 1; }
-          grep -q "扩展网络请求 http://127.0.0.1:8767/release.json" "$support/proxi.log" || { echo "没有从发布信息找下载地址"; exit 1; }
-          app="$support/Extensions/Proxi Engine.app"
-          codesign --verify --deep --strict "$app"
-          bin="$app/Contents/MacOS/ProxiEngine"
-          # 代理引擎第一次运行：下载内核和 GeoIP 数据库（上游的正式发布，核对写死的 SHA-256），读以前的订阅，启动内核。
-          for i in $(seq 1 180); do grep -q "读取到 4 个节点" "$engine/engine.log" 2>/dev/null && break; sleep 1; done
-          echo "===== 代理引擎的日志 ====="; cat "$engine/engine.log" || true
-          grep -q "下载 https://github.com/MetaCubeX/mihomo/releases/download/v1.19.31/" "$engine/engine.log" || { echo "没有从上游的发布下载内核"; exit 1; }
-          grep -q "内核 v1.19.31 和 GeoIP 数据库已下载并校验" "$engine/engine.log" || { echo "内核没有下载校验好"; exit 1; }
-          grep -q "内核已启动" "$engine/engine.log" || { echo "内核没有启动"; exit 1; }
-          grep -q "读取到 4 个节点" "$engine/engine.log" || { echo "没有读到以前的订阅里的 3 个节点和 1 个手动节点"; exit 1; }
-          expected=$(python3 -c 'import platform; print({"arm64":"fae1f37e28ee53fcf5be7a8bb121099db1fe442e44205734ed49c62579364090"}.get(platform.machine(),"d1361fdb7f93ac500d8c936cfd61516b2445c6acfaabe982244fdd765872e077"))')
-          [ "$(shasum -a 256 "$engine/bin/mihomo" | cut -d' ' -f1)" = "$expected" ] || { echo "下载的内核和写死的校验和不一样"; exit 1; }
-          [ -f "$engine/bin/Country.mmdb" ] || { echo "没有下载 GeoIP 数据库"; exit 1; }
-          find "$app" -iname '*mihomo*' | grep . && { echo "内核不该放进程序里"; exit 1; }
-          # 以前开着的「节点代理」（只设了 git）开回来了，指向代理引擎的端口。
-          for i in $(seq 1 30); do [ "$(git config --global --includes --get http.proxy || true)" = "http://127.0.0.1:7890" ] && break; sleep 1; done
-          echo "===== 程序日志 ====="; cat "$support/proxi.log"
-          [ "$(git config --global --includes --get http.proxy || true)" = "http://127.0.0.1:7890" ] || { echo "以前开着的代理引擎配置没有开回来"; exit 1; }
-          grep -q "代理引擎运行起来了，开回以前开着的「节点代理」" "$support/proxi.log" || { echo "日志里没有开回来的记录"; exit 1; }
-          cli=dist/Proxi.app/Contents/MacOS/Proxi
-          "$cli" status --json | tee "$RUNNER_TEMP/ext-status.json"
-          python3 -c "import json,sys; e=json.load(open(sys.argv[1]))['extension']; assert e['enabled'] and e['running'] and e['port']==7890, e" "$RUNNER_TEMP/ext-status.json" || { echo "状态里的扩展不对"; exit 1; }
-          "$cli" status | tee "$RUNNER_TEMP/ext-status.txt"
-          grep -q "节点代理" "$RUNNER_TEMP/ext-status.txt" || { echo "状态里没有正在用的代理引擎配置"; exit 1; }
-          "$cli" profiles | grep -q "节点代理" || { echo "配置列表里没有代理引擎那条配置"; exit 1; }
-          grep -q '"engine"' "$support/config.json" && { echo "代理引擎那条配置不该写进 Proxi 的 config.json"; exit 1; }
-          # 经代理引擎的端口访问（假节点都连不上，自动选择会退回直连）。
-          echo "经代理引擎访问外网：$(curl -s -m 10 -x http://127.0.0.1:7890 -o /dev/null -w '%{http_code}' https://www.apple.com/library/test/success.html || true)"
-          # 代理引擎自己的命令行：经它的本机控制接口操作。
-          core="$engine/core/config.yaml"
-          "$bin" status --json | tee "$RUNNER_TEMP/engine-status.json"
-          grep -q '"engine"' "$RUNNER_TEMP/engine-status.json" || { echo "代理引擎的命令行读不到状态"; exit 1; }
-          "$bin" nodes 测试
-          "$bin" rule add example.org direct --type suffix
-          for i in $(seq 1 20); do grep -q 'DOMAIN-SUFFIX,example.org,DIRECT' "$core" && break; sleep 0.5; done
-          grep -q 'DOMAIN-SUFFIX,example.org,DIRECT' "$core" || { echo "命令行加的规则没有进内核配置"; exit 1; }
-          "$bin" undo
-          for i in $(seq 1 20); do grep -q 'DOMAIN-SUFFIX,example.org,DIRECT' "$core" || break; sleep 0.5; done
-          grep -q 'DOMAIN-SUFFIX,example.org,DIRECT' "$core" && { echo "撤销没有生效"; exit 1; }
-          grep -q 'name: "组 A"' "$core" || { echo "以前的策略组没有进内核配置"; exit 1; }
-          grep -q 'DOMAIN-SUFFIX,example.net,组 A' "$core" || { echo "以前的规则没有进内核配置"; exit 1; }
-          grep -q 'exclude-filter: "(?i)过期"' "$core" || { echo "订阅的排除没有写进内核配置"; exit 1; }
-          "$bin" check https://www.apple.com/library/test/success.html || true
-          # 截图：Proxi 的面板和扩展页，代理引擎的设置（它没有自己的菜单栏图标，再打开一次就显示设置）。
-          open "proxi://panel"; sleep 3
-          screencapture -x screenshots/ext-panel.png || true
-          open "proxi://settings?page=extensions"; sleep 3
-          screencapture -x screenshots/ext-page.png || true
-          open "proxi://settings?page=profiles"; sleep 3
-          screencapture -x screenshots/ext-profiles.png || true
-          open -a "$app"; sleep 4
-          screencapture -x screenshots/engine-settings.png || true
-          # 验证切换设置期间也不会临时进入 Dock（持续采样，而非只检查最终状态）。
-          swift Scripts/check-settings-dock.swift "$app"
-          # 特权助手：装的时候核对内核的校验和，认不出的内核不装；装好以后经它以 root 运行内核（网关模式）。
-          printf 'not the core' > "$RUNNER_TEMP/fake-core"; chmod +x "$RUNNER_TEMP/fake-core"
-          if sudo "$bin" helper install --uid "$(id -u)" --core "$RUNNER_TEMP/fake-core" > "$RUNNER_TEMP/fake-helper.txt" 2>&1; then
-            cat "$RUNNER_TEMP/fake-helper.txt"; echo "认不出的内核不该装进特权助手"; exit 1
-          fi
-          cat "$RUNNER_TEMP/fake-helper.txt"
-          grep -qE "校验和不对|checksum doesn't match" "$RUNNER_TEMP/fake-helper.txt" || { echo "没有按校验和拒绝"; exit 1; }
-          [ ! -e /Library/PrivilegedHelperTools/com.whrss9527.proxyswitch.mihomo ] || { echo "认不出的内核留在了助手的目录里"; exit 1; }
-          sudo "$bin" helper install --uid "$(id -u)" --core "$engine/bin/mihomo"
-          for i in $(seq 1 20); do "$bin" helper status && break; sleep 0.5; done
-          "$bin" helper status || { echo "特权助手没有运行"; sudo cat /Library/Logs/ProxySwitch-helper.log || true; exit 1; }
-          [ "$(stat -f %u /Library/PrivilegedHelperTools/com.whrss9527.proxyswitch.mihomo)" = "0" ] || { echo "助手里的内核不是 root 的"; exit 1; }
-          [ "$(shasum -a 256 /Library/PrivilegedHelperTools/com.whrss9527.proxyswitch.mihomo | cut -d' ' -f1)" = "$expected" ] || { echo "助手里的内核不是校验过的那份"; exit 1; }
-          fwd_before=$(sysctl -n net.inet.ip.forwarding)
-          # 虚拟网卡只接管 1.1.1.1 和 1.0.0.1（用配置补丁限定路由），免得 runner 自己和 GitHub 的连接被截下来。
-          printf '%s' '{"proxi":1,"patch":"log-level: info\ntun:\n  route-address: [\"1.1.1.1/32\", \"1.0.0.1/32\"]\n"}' > "$RUNNER_TEMP/tun-patch.json"
-          "$bin" import "$RUNNER_TEMP/tun-patch.json"
-          "$bin" gateway on
-          for i in $(seq 1 60); do ifconfig | grep -q "inet 198\.18\." && break; sleep 0.5; done
-          helper_log="/Library/Application Support/ProxySwitch/core/core.log"
-          if ! ifconfig | grep -q "inet 198\.18\."; then
-            echo "虚拟网卡没有起来"; "$bin" status --json || true; cat "$helper_log" || true; tail -30 "$engine/engine.log"; sudo tail -30 /Library/Logs/ProxySwitch-helper.log || true
-            exit 1
-          fi
-          for i in $(seq 1 20); do [ "$(sysctl -n net.inet.ip.forwarding)" = "1" ] && break; sleep 0.5; done
-          [ "$(sysctl -n net.inet.ip.forwarding)" = "1" ] || { echo "网关模式没有打开 IP 转发"; exit 1; }
-          pgrep -f "com.whrss9527.proxyswitch.mihomo" >/dev/null || { echo "助手没有运行内核"; exit 1; }
-          served=$(dig +short +time=3 +tries=2 example.org @127.0.0.1 | head -1)
-          echo "网关的 DNS 回答 example.org：$served"
-          case "$served" in 198.18.*) ;; *) echo "网关模式的 DNS 没有回答"; exit 1 ;; esac
-          "$bin" gateway off
-          for i in $(seq 1 60); do ifconfig | grep -q "inet 198\.18\." || break; sleep 0.5; done
-          ifconfig | grep -q "inet 198\.18\." && { echo "关掉网关模式后虚拟网卡还在"; exit 1; }
-          for i in $(seq 1 20); do [ "$(sysctl -n net.inet.ip.forwarding)" = "$fwd_before" ] && break; sleep 0.5; done
-          [ "$(sysctl -n net.inet.ip.forwarding)" = "$fwd_before" ] || { echo "IP 转发没有恢复"; exit 1; }
-          for i in $(seq 1 30); do pgrep -x mihomo >/dev/null && break; sleep 0.5; done
-          pgrep -x mihomo >/dev/null || { echo "关掉网关模式后内核没有回到本机进程"; exit 1; }
-          "$bin" undo
-          sudo "$bin" helper uninstall
-          [ ! -e /Library/LaunchDaemons/com.whrss9527.proxyswitch.helper.plist ] || { echo "特权助手没有卸载干净"; exit 1; }
-          # 关闭扩展（测试用的环境变量，等于在扩展页里点「关闭并移除」）：先关掉正在用的代理引擎配置、恢复设置，再退出代理引擎、删掉程序，数据留着。
-          pkill -x Proxi || true
-          for i in $(seq 1 30); do pgrep -x Proxi >/dev/null || break; sleep 0.5; done
-          for i in $(seq 1 20); do pgrep -x ProxiEngine >/dev/null || break; sleep 0.5; done
-          pgrep -x ProxiEngine >/dev/null && { echo "Proxi 退出时代理引擎应该跟着退出（下次打开 Proxi 再启动）"; exit 1; }
-          # 代理引擎跟着退出了：正在用的「代理引擎」配置也要关掉，不然 git、系统代理都指向一个没人监听的端口。
-          [ -z "$(git config --global --includes --get http.proxy || true)" ] || { echo "退出 Proxi 时没有关掉正在用的代理引擎配置（git 还指着它）"; cat "$support/proxi.log"; exit 1; }
-          grep -q "退出时关闭了「节点代理」" "$support/proxi.log" || { echo "日志里没有退出时关闭代理引擎配置的记录"; exit 1; }
-          : > "$support/proxi.log"
-          PROXI_TEST_DISABLE_EXTENSION=1 dist/Proxi.app/Contents/MacOS/Proxi >/dev/null 2>&1 &
-          for i in $(seq 1 60); do grep -q "扩展：代理引擎已关闭" "$support/proxi.log" && break; sleep 1; done
-          sleep 2
-          cat "$support/proxi.log"
-          grep -q "扩展：代理引擎已关闭" "$support/proxi.log" || { echo "扩展没有关闭"; exit 1; }
-          for i in $(seq 1 20); do pgrep -x ProxiEngine >/dev/null || break; sleep 0.5; done
-          pgrep -x ProxiEngine && { echo "关闭扩展后代理引擎还在运行"; exit 1; }
-          pgrep -x mihomo && { echo "关闭扩展后内核还在运行"; exit 1; }
-          [ -z "$(git config --global --includes --get http.proxy || true)" ] || { echo "关闭扩展后 git 代理还在"; exit 1; }
-          [ ! -e "$app" ] || { echo "「关闭并移除」后程序还在"; exit 1; }
-          [ -f "$engine/config.json" ] && grep -q "测试订阅" "$engine/config.json" || { echo "关闭扩展不该删掉它的数据"; exit 1; }
-          "$cli" status --json > "$RUNNER_TEMP/off-status.json"
-          python3 -c "import json,sys; assert json.load(open(sys.argv[1]))['extension']=={'enabled': False}" "$RUNNER_TEMP/off-status.json" || { echo "关闭后状态不对"; exit 1; }
-          "$cli" profiles | grep -q "节点代理" && { echo "关闭扩展后配置列表里还有代理引擎"; exit 1; }
-          before=$(grep -c "扩展网络请求" "$support/proxi.log" || true)
-          sleep 8
-          [ "$(grep -c "扩展网络请求" "$support/proxi.log" || true)" = "$before" ] || { echo "关闭后还有扩展的网络请求"; exit 1; }
-          pkill -x Proxi || true
-          sleep 2
-          # 后面的步骤用回原来的配置。
-          cp "$RUNNER_TEMP/config-backup.json" "$support/config.json"
-          echo '{}' > "$support/state.json"
-          rm -rf "$engine" "$support/Extensions"
-          echo "扩展测试通过"
-      - name: 英文界面冒烟并截图
-        run: |
-          support="$HOME/Library/Application Support/Proxi"
-          domain=com.whrss9527.proxyswitch
-          app=dist/Proxi.app/Contents/MacOS/Proxi
-          # 等 Proxi 写出启动的那一行（界面语言跟着写在后面）。
-          wait_started() {
-            for i in $(seq 1 30); do grep -q "界面语言 english=" "$support/proxi.log" && return 0; sleep 1; done
-            echo "Proxi 没有启动"; tail -30 "$support/proxi.log"; exit 1
-          }
-          # 设置里选了 English：只在 Proxi 自己的偏好设置里写 AppleLanguages，界面、菜单和命令行都是英文。
-          defaults write "$domain" AppleLanguages -array en
-          "$app" help | tee "$RUNNER_TEMP/help-en.txt" | head -3
-          grep -q "^Usage: proxi <command>" "$RUNNER_TEMP/help-en.txt" || { echo "英文界面下命令行的用法应该是英文"; exit 1; }
-          : > "$support/proxi.log"
-          "$app" >/dev/null 2>&1 &
-          wait_started
-          grep '界面语言 english=' "$support/proxi.log"
-          grep -q '界面语言 english=true setting=english sample="Settings…"' "$support/proxi.log" || { echo "设置里选了 English，界面应该是英文"; exit 1; }
-          sleep 4
-          open "proxi://panel"; sleep 3
-          screencapture -x screenshots/en-panel.png || true
-          for page in profiles general automation sync extensions about; do
-            open "proxi://settings?page=$page"; sleep 3
-            screencapture -x "screenshots/en-$page.png" || true
-          done
-          # 命令行经正在运行的程序拿到的文字也是英文。
-          "$app" status
-          # 代理引擎的界面文字也有英文（Proxi 启动它时按自己的界面语言传过去；这里直接看它的命令行用法）。
-          defaults write com.whrss9527.proxyswitch.engine AppleLanguages -array en
-          "dist/Proxi Engine.app/Contents/MacOS/ProxiEngine" help | tee "$RUNNER_TEMP/engine-help-en.txt" | head -2
-          grep -q "^Usage: <engine app binary>" "$RUNNER_TEMP/engine-help-en.txt" || { echo "代理引擎的英文用法不对"; exit 1; }
-          defaults delete com.whrss9527.proxyswitch.engine AppleLanguages || true
-          pkill -x Proxi || true
-          sleep 3
-          # 跟随系统：删掉 Proxi 自己的选择，runner 的系统语言是英文，界面就是英文。
-          # 同时测「立即重新启动」打开的新实例会先等旧的退出：带上一个还在运行的进程号，它退出前不该启动。
-          defaults delete "$domain" AppleLanguages
-          sleep 8 & waiter=$!
-          : > "$support/proxi.log"
-          "$app" --relaunch-after "$waiter" >/dev/null 2>&1 &
-          sleep 3
-          if grep -q "界面语言 english=" "$support/proxi.log"; then echo "没有等旧的实例退出就启动了"; exit 1; fi
-          wait "$waiter" || true
-          wait_started
-          grep -q '界面语言 english=true setting=system sample="Settings…"' "$support/proxi.log" || { echo "跟随系统时（系统是英文）界面应该是英文"; grep '界面语言' "$support/proxi.log"; exit 1; }
-          pkill -x Proxi || true
-          sleep 3
-          # 后面的步骤用回中文。
-          defaults write "$domain" AppleLanguages -array zh-Hans
-          ls -la screenshots
+        run: bash Scripts/ci/test.sh
+      - name: 打包和检查产物
+        run: bash Scripts/ci/package.sh
+      - name: 编译窗口等待工具
+        run: bash Scripts/ci/build-tools.sh
+      - name: 保留文件权限和符号链接
+        run: bash Scripts/ci/archive.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: Proxi-macos
-          path: dist/Proxi-macos.zip
-      - name: 端到端更新测试（本地假发布）
-        run: |
-          # 输出另存一份：失败时最后一步把末尾打在日志最后（前面是几万行截图）。
-          exec > >(tee "$RUNNER_TEMP/update.log") 2>&1
-          support="$HOME/Library/Application Support/Proxi"
-          # 留一份原版，后面测「从临时位置运行」时用。
-          rm -rf relocate-src && mkdir -p relocate-src && ditto dist/Proxi.app relocate-src/Proxi.app
-          # 用打包好的程序造一个 9.9.9 版本，放到本地 HTTP 服务器上当作 GitHub 的最新发布：通用包和 arm64 精简包各一份。
-          rm -rf feed && mkdir -p feed
-          cp -R dist/Proxi.app feed/Proxi.app
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 9.9.9" feed/Proxi.app/Contents/Info.plist
-          codesign --force --deep --sign - feed/Proxi.app
-          (cd feed && ditto -c -k --keepParent Proxi.app Proxi-macos.zip && cp Proxi-macos.zip Proxi-macos-arm64.zip && rm -rf Proxi.app \
-            && shasum -a 256 Proxi-macos.zip Proxi-macos-arm64.zip > SHA256SUMS.txt && cat SHA256SUMS.txt)
-          size=$(stat -f %z feed/Proxi-macos.zip)
-          cat > feed/latest.json <<JSON
-          {"tag_name":"v9.9.9","html_url":"http://127.0.0.1:8765/latest.json","published_at":"2026-01-01T00:00:00Z",
-           "body":"## 9.9.9\n\n- 这是 CI 里用来测试一键更新的假版本。\n- 下载、校验、替换、重新启动都会走一遍。",
-           "assets":[{"name":"Proxi-macos.zip","size":$size,"browser_download_url":"http://127.0.0.1:8765/Proxi-macos.zip"},
-                     {"name":"Proxi-macos-arm64.zip","size":$size,"browser_download_url":"http://127.0.0.1:8765/Proxi-macos-arm64.zip"},
-                     {"name":"SHA256SUMS.txt","size":100,"browser_download_url":"http://127.0.0.1:8765/SHA256SUMS.txt"}]}
-          JSON
-          (cd feed && python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &)
-          # 服务器起来要一会儿（runner 忙的时候会超过一秒），能访问了再往下走。
-          for i in $(seq 1 30); do
-            curl -sf -o /dev/null http://127.0.0.1:8765/latest.json && break
-            sleep 0.5
-          done
-          curl -sSf -o /dev/null http://127.0.0.1:8765/latest.json || { echo "本地的假发布服务器没有起来"; exit 1; }
-          : > "$support/proxi.log"
-          PROXI_UPDATE_URL=http://127.0.0.1:8765/latest.json dist/Proxi.app/Contents/MacOS/Proxi >/dev/null 2>&1 &
-          # 启动 5 秒后自动检查，等它发现新版本。
-          for i in $(seq 1 20); do
-            grep -q "有新版本 9.9.9" "$support/proxi.log" && break
-            sleep 1
-          done
-          open "proxi://settings?page=about"; sleep 4
-          screencapture -x screenshots/about.png || true
-          open "proxi://panel"; sleep 3
-          screencapture -x screenshots/panel-update.png || true
-          open "proxi://update"
-          # 等下载、替换和重新启动完成。
-          version=""
-          for i in $(seq 1 60); do
-            version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" dist/Proxi.app/Contents/Info.plist 2>/dev/null || true)
-            if [ "$version" = "9.9.9" ] && grep -q "已启动，版本 9.9.9" "$support/proxi.log"; then break; fi
-            sleep 1
-          done
-          sleep 3
-          open "proxi://settings?page=about"; sleep 4
-          screencapture -x screenshots/about-after.png || true
-          echo "===== 日志 ====="
-          cat "$support/proxi.log" || true
-          echo "================"
-          [ "$version" = "9.9.9" ] || { echo "程序没有被替换成 9.9.9（现在是 ${version}）"; exit 1; }
-          grep -q "已启动，版本 9.9.9" "$support/proxi.log" || { echo "新版本没有重新启动"; exit 1; }
-          grep -q "下载 http://127.0.0.1:8765/Proxi-macos-arm64.zip" "$support/proxi.log" || { echo "没有下载本机架构的精简包"; exit 1; }
-          pgrep -x Proxi >/dev/null || { echo "更新后程序没有在运行"; exit 1; }
-          codesign --verify --deep --strict dist/Proxi.app
-          ls -la dist
-          pkill -x Proxi || true
-          sleep 3
-          rm -rf dist/Proxi.app
+          name: proxi-ci-dist
+          path: ${{ runner.temp }}/proxi-ci-dist.tar.gz
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proxi-ci-build-logs
+          path: |
+            ${{ runner.temp }}/build*.log
+            ${{ runner.temp }}/test*.log
+            screenshots/
 
-          # 再模拟「在下载文件夹里直接打开、被系统搬到只读的临时位置运行」：更新应该装进「应用程序」、旧的那份移到废纸篓、从新位置重新打开。
-          rm -rf /Applications/Proxi.app
-          : > "$support/proxi.log"
-          PROXI_UPDATE_URL=http://127.0.0.1:8765/latest.json PROXI_TEST_TRANSLOCATED=1 relocate-src/Proxi.app/Contents/MacOS/Proxi >/dev/null 2>&1 &
-          for i in $(seq 1 20); do
-            grep -q "有新版本 9.9.9" "$support/proxi.log" && break
-            sleep 1
-          done
-          app="$PWD/relocate-src/Proxi.app"
-          open -a "$app" "proxi://settings?page=about"; sleep 4
-          screencapture -x screenshots/about-relocate.png || true
-          open -a "$app" "proxi://update"
-          version=""
-          for i in $(seq 1 60); do
-            version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" /Applications/Proxi.app/Contents/Info.plist 2>/dev/null || true)
-            if [ "$version" = "9.9.9" ] && grep -q "已启动，版本 9.9.9" "$support/proxi.log"; then break; fi
-            sleep 1
-          done
-          sleep 3
-          echo "===== 日志（从临时位置运行） ====="
-          cat "$support/proxi.log" || true
-          echo "================"
-          [ "$version" = "9.9.9" ] || { echo "没有装进「应用程序」（/Applications 里的版本是 ${version}）"; exit 1; }
-          [ ! -e "$app" ] || { echo "旧的那份没有移到废纸篓"; exit 1; }
-          grep -q "移到废纸篓" "$support/proxi.log" || { echo "日志里没有移到废纸篓的记录"; exit 1; }
-          pgrep -f "/Applications/Proxi.app/Contents/MacOS/Proxi" >/dev/null || { echo "没有从「应用程序」重新打开"; exit 1; }
-          codesign --verify --deep --strict /Applications/Proxi.app
-          if xattr /Applications/Proxi.app | grep -q com.apple.quarantine; then echo "新程序还带着隔离标记"; exit 1; fi
-          pkill -x Proxi || true
-          sleep 2
-          rm -rf /Applications/Proxi.app
-          echo "更新测试通过"
-      - name: 从改名前的版本（ProxySwitch 0.10.0）一键更新
-        run: |
-          # 输出另存一份：失败时最后一步把末尾打在日志最后（前面是几万行截图）。
-          exec > >(tee "$RUNNER_TEMP/legacy.log") 2>&1
-          # 真实的旧版本经本地假发布更新到这次的程序：它找的是旧名字的包（发布流程里另存的副本），装好后还叫 ProxySwitch.app；
-          # 新程序第一次启动时把数据目录挪到 Proxi、把自己改名为 Proxi.app 再重新打开，并改好改名前装的命令行工具。
-          old_support="$HOME/Library/Application Support/ProxySwitch"
-          support="$HOME/Library/Application Support/Proxi"
-          rm -rf "$support" "$old_support"
-          work="$RUNNER_TEMP/legacy-update"
-          rm -rf "$work" && mkdir -p "$work/apps" "$work/feed"
-          curl -fsSL --retry 3 --retry-delay 3 -o "$work/old.zip" "https://github.com/${GITHUB_REPOSITORY}/releases/download/v0.10.0/ProxySwitch-macos-arm64.zip"
-          ditto -x -k "$work/old.zip" "$work/apps"
-          old_app="$work/apps/ProxySwitch.app"
-          new_app="$work/apps/Proxi.app"
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$old_app/Contents/Info.plist")" = "0.10.0" ] || { echo "下载的不是 0.10.0"; exit 1; }
-          # 和发布流程一样：新名字的包另存几份旧名字的副本，校验和都列上。包是上一步造的 9.9.9。
-          for name in Proxi-macos.zip Proxi-macos-arm64.zip ProxySwitch-macos.zip ProxySwitch-macos-arm64.zip; do
-            cp feed/Proxi-macos.zip "$work/feed/$name"
-          done
-          (cd "$work/feed" && shasum -a 256 *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt)
-          size=$(stat -f %z "$work/feed/Proxi-macos.zip")
-          assets=""
-          for name in Proxi-macos.zip Proxi-macos-arm64.zip ProxySwitch-macos.zip ProxySwitch-macos-arm64.zip; do
-            assets="$assets{\"name\":\"$name\",\"size\":$size,\"browser_download_url\":\"http://127.0.0.1:8766/$name\"},"
-          done
-          cat > "$work/feed/latest.json" <<JSON
-          {"tag_name":"v9.9.9","html_url":"http://127.0.0.1:8766/latest.json","published_at":"2026-01-01T00:00:00Z",
-           "body":"改名后的第一个版本（CI 里的假发布）",
-           "assets":[$assets{"name":"SHA256SUMS.txt","size":100,"browser_download_url":"http://127.0.0.1:8766/SHA256SUMS.txt"}]}
-          JSON
-          (cd "$work/feed" && python3 -m http.server 8766 --bind 127.0.0.1 >/dev/null 2>&1 &)
-          for i in $(seq 1 30); do
-            curl -sf -o /dev/null http://127.0.0.1:8766/latest.json && break
-            sleep 0.5
-          done
-          curl -sSf -o /dev/null http://127.0.0.1:8766/latest.json || { echo "本地的假发布服务器没有起来"; exit 1; }
-          # 旧版本的数据：一套配置，加上 0.12 及以前才有的设置和数据目录里的子目录（新版本第一次启动时去掉）。
-          mkdir -p "$old_support/imports"
-          echo "x" > "$old_support/imports/local.txt"
-          cat > "$old_support/config.json" <<JSON
-          {"profiles":[{"id":"6D2F2A1E-0000-4000-8000-000000000009","name":"旧配置","color":"#16a34a","kind":"http","host":"127.0.0.1","port":8888}],
-           "engine":{"mode":"rule"}}
-          JSON
-          # 改名前装过命令行工具：/usr/local/bin/proxyswitch 转给旧程序里的 ProxySwitch。
-          sudo mkdir -p /usr/local/bin && sudo chown "$(id -un)" /usr/local/bin
-          rm -f /usr/local/bin/proxi
-          printf '#!/bin/sh\n# ProxySwitch 的命令行工具：proxyswitch help 看用法。\nexec %s "$@"\n' "'$old_app/Contents/MacOS/ProxySwitch'" > /usr/local/bin/proxyswitch
-          chmod 755 /usr/local/bin/proxyswitch
-          PROXYSWITCH_UPDATE_URL=http://127.0.0.1:8766/latest.json "$old_app/Contents/MacOS/ProxySwitch" >/dev/null 2>&1 &
-          for i in $(seq 1 20); do
-            grep -q "有新版本 9.9.9" "$old_support/proxyswitch.log" 2>/dev/null && break
-            sleep 1
-          done
-          grep -q "有新版本 9.9.9" "$old_support/proxyswitch.log" || { echo "旧版本没有发现新版本"; cat "$old_support/proxyswitch.log" || true; exit 1; }
-          # proxyswitch:// 这次的程序也认，用 -a 指定交给旧版本。
-          open -a "$old_app" "proxyswitch://update"
-          for i in $(seq 1 90); do
-            [ -d "$new_app" ] && grep -q "已启动，版本 9.9.9" "$support/proxi.log" 2>/dev/null && break
-            sleep 1
-          done
-          sleep 3
-          echo "===== 日志（旧版本的日志挪过来后接着写） ====="
-          cat "$support/proxi.log" 2>/dev/null || cat "$old_support/proxyswitch.log" 2>/dev/null || true
-          echo "================"
-          ls -la "$work/apps"
-          [ -d "$new_app" ] || { echo "程序没有改名为 Proxi.app"; exit 1; }
-          [ ! -e "$old_app" ] || { echo "旧名字的程序还在"; exit 1; }
-          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$new_app/Contents/Info.plist")" = "9.9.9" ] || { echo "Proxi.app 不是新版本"; exit 1; }
-          grep -q "下载 http://127.0.0.1:8766/ProxySwitch-macos-arm64.zip" "$support/proxi.log" || { echo "旧版本没有按旧名字下载精简包"; exit 1; }
-          grep -q "数据目录已从" "$support/proxi.log" || { echo "日志里没有挪数据目录的记录"; exit 1; }
-          grep -q "程序已改名" "$support/proxi.log" || { echo "日志里没有改名的记录"; exit 1; }
-          grep -q "已启动，版本 9.9.9" "$support/proxi.log" || { echo "改名后没有重新打开"; exit 1; }
-          [ ! -e "$old_support" ] || { echo "旧的数据目录还在"; ls -la "$old_support"; exit 1; }
-          grep -q "旧配置" "$support/config.json" || { echo "配置没有带过来"; cat "$support/config.json"; exit 1; }
-          grep -q '"engine"' "$support/config.json" && { echo "配置里还有以前版本的设置"; cat "$support/config.json"; exit 1; }
-          [ ! -e "$support/imports" ] || { echo "以前版本留下的 imports 没有删掉"; exit 1; }
-          [ -f "$support/engine/imports/local.txt" ] || { echo "以前版本的 imports 没有原样挪到 engine/ 里"; ls -laR "$support"; exit 1; }
-          grep -q '"engine"' "$support/engine/config-0.12-backup.json" || { echo "以前版本的配置没有备份"; exit 1; }
-          pgrep -f "$new_app/Contents/MacOS/Proxi" >/dev/null || { echo "没有从 Proxi.app 重新打开"; exit 1; }
-          # 改名前的命令行工具改好了，还多了一个 proxi。
-          for i in $(seq 1 20); do grep -q "$new_app/Contents/MacOS/Proxi" /usr/local/bin/proxyswitch && break; sleep 0.5; done
-          cat /usr/local/bin/proxyswitch
-          grep -q "$new_app/Contents/MacOS/Proxi" /usr/local/bin/proxyswitch || { echo "改名前的 proxyswitch 命令没有改好"; exit 1; }
-          grep -q "$new_app/Contents/MacOS/Proxi" /usr/local/bin/proxi || { echo "没有装上 proxi 命令"; exit 1; }
-          /usr/local/bin/proxi version | tee "$RUNNER_TEMP/proxi-version.txt"
-          grep -q "Proxi 9.9.9" "$RUNNER_TEMP/proxi-version.txt" || { echo "proxi 命令不能用"; exit 1; }
-          /usr/local/bin/proxyswitch status --json > "$RUNNER_TEMP/legacy-status.json" || true
-          grep -q '"proxy"' "$RUNNER_TEMP/legacy-status.json" || { echo "改名前的 proxyswitch 命令读不到状态"; cat "$RUNNER_TEMP/legacy-status.json"; exit 1; }
-          codesign --verify --deep --strict "$new_app"
-          pkill -x Proxi || true
-          sleep 2
-          rm -f /usr/local/bin/proxi /usr/local/bin/proxyswitch
-          echo "从改名前的版本更新的测试通过"
-      - name: 签名流程自测（临时的自签名证书）
-        run: |
-          # 发布时用 Developer ID 证书签名：这里造一张临时的自签名证书，把导入钥匙串、找证书、签名、校验、启动走一遍。
-          # 输出另存一份：失败时最后一步把末尾打在日志最后（前面是几万行截图）。
-          exec > >(tee "$RUNNER_TEMP/selftest.log") 2>&1
-          work="$RUNNER_TEMP/signing-selftest"
-          rm -rf "$work" && mkdir -p "$work"
-          cat > "$work/openssl.cnf" <<'EOF'
-          [req]
-          distinguished_name = dn
-          x509_extensions = ext
-          prompt = no
-          [dn]
-          CN = Proxi CI Test
-          [ext]
-          basicConstraints = critical, CA:false
-          keyUsage = critical, digitalSignature
-          extendedKeyUsage = critical, codeSigning
-          EOF
-          /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 2 -config "$work/openssl.cnf" -keyout "$work/key.pem" -out "$work/cert.pem"
-          /usr/bin/openssl pkcs12 -export -inkey "$work/key.pem" -in "$work/cert.pem" -out "$work/cert.p12" -passout pass:ci-test
-          : > "$work/env"
-          CERTIFICATE_P12_BASE64="$(base64 -i "$work/cert.p12")" CERTIFICATE_PASSWORD=ci-test GITHUB_ENV="$work/env" Scripts/import-certificate.sh
-          cat "$work/env"
-          identity=$(awk -F= '/^CODESIGN_IDENTITY=/{print $2}' "$work/env")
-          keychain=$(awk -F= '/^CODESIGN_KEYCHAIN=/{print $2}' "$work/env")
-          [ -n "$identity" ] && [ -n "$keychain" ] || { echo "导入脚本没有给出签名身份和钥匙串"; exit 1; }
-          CODESIGN_IDENTITY="$identity" CODESIGN_KEYCHAIN="$keychain" VERSION=0.0.0 ARCHS="" THIN_ARCHIVES=1 Scripts/build-app.sh
-          for app in dist/Proxi.app dist/thin-arm64/Proxi.app; do
-            for code in "$app"; do
-              info=$(codesign -dvv "$code" 2>&1)
-              echo "$info" | grep -q "Authority=Proxi CI Test" || { echo "$info"; echo "$code 不是用证书签的"; exit 1; }
-              echo "$info" | grep -q "flags=.*runtime" || { echo "$info"; echo "$code 没有开 hardened runtime"; exit 1; }
-              echo "$info" | grep -q "^Timestamp=" || { echo "$info"; echo "$code 没有安全时间戳"; exit 1; }
-            done
-          done
-          codesign -dvv dist/Proxi.app 2>&1 | grep -E "^(Authority|Timestamp|TeamIdentifier)=|flags=" | tee -a screenshots/summary.txt
-          # 用证书签名的程序照样能启动。
-          dist/Proxi.app/Contents/MacOS/Proxi >/dev/null 2>&1 &
-          sleep 6
-          pgrep -x Proxi >/dev/null || { echo "用证书签名的程序没有在运行"; exit 1; }
-          pkill -x Proxi || true
-          sleep 2
-          security delete-keychain "$keychain"
-          # 公证脚本的流程：用假的 xcrun（只模拟 notarytool 和 stapler）和假的 spctl 走一遍通过、没通过、没有凭据，
-          # 以及公证通过但系统检查说没公证（照常发布、记警告）、系统检查因为别的原因不通过（失败）。
-          fake="$work/fakebin"
-          mkdir -p "$fake"
-          cat > "$fake/xcrun" <<'EOF'
-          #!/bin/bash
-          case "$1 $2" in
-            "notarytool submit") echo '{"id":"00000000-0000-4000-8000-000000000000","message":"Successfully uploaded file"}' ;;
-            "notarytool wait") echo "{\"id\":\"$3\",\"status\":\"${FAKE_NOTARY_STATUS:-Accepted}\",\"message\":\"Processing complete\"}" ;;
-            "notarytool log") echo '{"issues":[{"message":"fake notary issue"}]}' ;;
-            "stapler staple"|"stapler validate") echo "The $2 action worked!" ;;
-            *) echo "fake xcrun: unexpected $*" >&2; exit 1 ;;
-          esac
-          EOF
-          cat > "$fake/spctl" <<'EOF'
-          #!/bin/bash
-          case "${FAKE_SPCTL:-accepted}" in
-            accepted) echo "${@: -1}: accepted"; echo "source=Notarized Developer ID" ;;
-            unnotarized) echo "${@: -1}: rejected" >&2; echo "source=Unnotarized Developer ID" >&2; exit 3 ;;
-            *) echo "${@: -1}: rejected" >&2; echo "source=no usable signature" >&2; exit 3 ;;
-          esac
-          EOF
-          chmod +x "$fake/xcrun" "$fake/spctl"
-          cp dist/Proxi-macos-arm64.zip "$work/test.zip"
-          PATH="$fake:$PATH" NOTARY_APPLE_ID=ci@example.com NOTARY_PASSWORD=x NOTARY_TEAM_ID=ABCDE12345 Scripts/notarize.sh "$work/test.zip"
-          ditto -x -k "$work/test.zip" "$work/unzipped"
-          codesign --verify --deep --strict "$work/unzipped/Proxi.app"
-          if PATH="$fake:$PATH" FAKE_NOTARY_STATUS=Invalid NOTARY_APPLE_ID=ci@example.com NOTARY_PASSWORD=x NOTARY_TEAM_ID=ABCDE12345 \
-              Scripts/notarize.sh "$work/test.zip" > "$work/invalid.log" 2>&1; then
-            cat "$work/invalid.log"; echo "公证没通过时脚本应该失败"; exit 1
-          fi
-          grep -q "fake notary issue" "$work/invalid.log" || { cat "$work/invalid.log"; echo "公证没通过时没有打印苹果的日志"; exit 1; }
-          if ! PATH="$fake:$PATH" FAKE_SPCTL=unnotarized SPCTL_TRIES=2 SPCTL_INTERVAL=1 NOTARY_APPLE_ID=ci@example.com NOTARY_PASSWORD=x NOTARY_TEAM_ID=ABCDE12345 \
-              Scripts/notarize.sh "$work/test.zip" > "$work/unnotarized.log" 2>&1; then
-            cat "$work/unnotarized.log"; echo "公证通过、只是系统检查说没公证时应该照常发布"; exit 1
-          fi
-          grep -q "::warning::test.zip：公证已通过" "$work/unnotarized.log" || { cat "$work/unnotarized.log"; echo "系统检查说没公证时没有记警告"; exit 1; }
-          if PATH="$fake:$PATH" FAKE_SPCTL=other SPCTL_TRIES=2 SPCTL_INTERVAL=1 NOTARY_APPLE_ID=ci@example.com NOTARY_PASSWORD=x NOTARY_TEAM_ID=ABCDE12345 \
-              Scripts/notarize.sh "$work/test.zip" > "$work/rejected.log" 2>&1; then
-            cat "$work/rejected.log"; echo "系统检查因为别的原因不通过时脚本应该失败"; exit 1
-          fi
-          if Scripts/notarize.sh "$work/test.zip" > "$work/nocreds.log" 2>&1; then
-            cat "$work/nocreds.log"; echo "没有公证凭据时脚本应该失败"; exit 1
-          fi
-          echo "公证脚本的五种情况都符合预期" | tee -a screenshots/summary.txt
-          # 公证脚本用到的命令和参数，这个 Xcode 里都有。
-          for command in submit wait; do
-            help=$(xcrun notarytool "$command" --help 2>&1)
-            for option in --key --key-id --issuer --apple-id --password --team-id --output-format; do
-              echo "$help" | grep -qE -- "${option}( |,|\$)" || { echo "$help"; echo "notarytool ${command} 没有 ${option} 参数"; exit 1; }
-            done
-          done
-          xcrun notarytool log --help >/dev/null
-          xcrun --find stapler
-          echo "签名流程自测通过"
+  smoke:
+    name: 中英文冒烟（${{ matrix.language }}）
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [zh, en]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxi-ci-dist
+          path: ${{ runner.temp }}
+      - name: 还原产物
+        run: bash Scripts/ci/unpack.sh
+      - name: 准备独立测试环境
+        run: bash Scripts/ci/prepare.sh
+      - name: 冒烟和截图
+        run: bash Scripts/ci/smoke-${{ matrix.language }}.sh
+      - name: 收集诊断和截图
+        if: always()
+        run: bash Scripts/ci/report.sh
+      - name: 清理测试进程与钥匙串
+        if: always()
+        run: bash Scripts/ci/cleanup.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: screenshots
-          path: screenshots
-      - name: 把截图以 base64 打进日志
+          name: proxi-ci-smoke-${{ matrix.language }}
+          path: |
+            screenshots/
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/*-status.json
+            ${{ runner.temp }}/fixture-requests*.jsonl
+          retention-days: 7
+
+  migration:
+    name: 旧配置迁移
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxi-ci-dist
+          path: ${{ runner.temp }}
+      - name: 还原产物
+        run: bash Scripts/ci/unpack.sh
+      - name: 准备独立测试环境
+        run: bash Scripts/ci/prepare.sh
+      - name: migration-config
+        run: bash Scripts/ci/migration-config.sh
+      - name: 收集诊断和截图
         if: always()
-        run: |
-          cd screenshots || exit 0
-          if [ -f panel.png ]; then
-            width=$(sips -g pixelWidth panel.png | awk '/pixelWidth/{print $2}')
-            cropw=640; croph=760
-            if ! sips -c "$croph" "$cropw" --cropOffset 0 $((width - cropw)) panel.png --out panel-crop.png >/dev/null 2>&1; then
-              cp panel.png panel-crop.png
-            fi
-            sips -Z 560 -s format jpeg -s formatOptions 65 panel-crop.png --out panel.jpg >/dev/null
-          fi
-          if [ -f panel-on.png ]; then
-            width=$(sips -g pixelWidth panel-on.png | awk '/pixelWidth/{print $2}')
-            if ! sips -c 760 640 --cropOffset 0 $((width - 640)) panel-on.png --out panel-on-crop.png >/dev/null 2>&1; then
-              cp panel-on.png panel-on-crop.png
-            fi
-            sips -Z 560 -s format jpeg -s formatOptions 65 panel-on-crop.png --out panel-on.jpg >/dev/null
-          fi
-          if [ -f panel-update.png ]; then
-            width=$(sips -g pixelWidth panel-update.png | awk '/pixelWidth/{print $2}')
-            if ! sips -c 760 640 --cropOffset 0 $((width - 640)) panel-update.png --out panel-update-crop.png >/dev/null 2>&1; then
-              cp panel-update.png panel-update-crop.png
-            fi
-            sips -Z 560 -s format jpeg -s formatOptions 65 panel-update-crop.png --out panel-update.jpg >/dev/null
-          fi
-          if [ -f en-panel.png ]; then
-            width=$(sips -g pixelWidth en-panel.png | awk '/pixelWidth/{print $2}')
-            if ! sips -c 760 640 --cropOffset 0 $((width - 640)) en-panel.png --out en-panel-crop.png >/dev/null 2>&1; then
-              cp en-panel.png en-panel-crop.png
-            fi
-            sips -Z 560 -s format jpeg -s formatOptions 65 en-panel-crop.png --out en-panel.jpg >/dev/null
-          fi
-          # 设置窗口居中，裁到窗口附近再缩小，日志里放得下、看得清。
-          for name in settings sync general extensions upgrade ext-page ext-profiles engine-settings about about-after about-relocate en-profiles en-general en-automation en-sync en-extensions en-about; do
-            [ -f "$name.png" ] || continue
-            width=$(sips -g pixelWidth "$name.png" | awk '/pixelWidth/{print $2}')
-            height=$(sips -g pixelHeight "$name.png" | awk '/pixelHeight/{print $2}')
-            cropw=$((width * 9 / 10)); croph=$((height * 17 / 20))
-            if ! sips -c "$croph" "$cropw" --cropOffset $((height / 20)) $(((width - cropw) / 2)) "$name.png" --out "$name-crop.png" >/dev/null 2>&1; then
-              cp "$name.png" "$name-crop.png"
-            fi
-            sips -Z 1000 -s format jpeg -s formatOptions 60 "$name-crop.png" --out "$name.jpg" >/dev/null
-          done
-          for name in settings sync general extensions upgrade ext-page ext-profiles engine-settings about-after panel panel-on ext-panel about panel-update about-relocate en-panel en-profiles en-general en-automation en-sync en-extensions en-about; do
-            [ -f "$name.jpg" ] || continue
-            echo "=====BEGIN $name.jpg====="
-            base64 -b 76 -i "$name.jpg"
-            echo "=====END $name.jpg====="
-          done
-          # 菜单栏右半边放大 4 倍，最后打出来，日志末尾一定能看到。
-          if [ -f desktop.png ]; then
-            width=$(sips -g pixelWidth desktop.png | awk '/pixelWidth/{print $2}')
-            if sips -c 25 520 --cropOffset 0 $((width - 520)) desktop.png --out menubar-crop.png >/dev/null 2>&1; then
-              sips -z 100 2080 menubar-crop.png --out menubar.png >/dev/null
-              echo "=====BEGIN menubar.png====="
-              base64 -b 76 -i menubar.png
-              echo "=====END menubar.png====="
-            fi
-          fi
-          if [ -f icon-preview.png ]; then
-            sips -s format jpeg -s formatOptions 85 icon-preview.png --out icon-preview.jpg >/dev/null
-            echo "=====BEGIN icon-preview.jpg====="
-            base64 -b 76 -i icon-preview.jpg
-            echo "=====END icon-preview.jpg====="
-          fi
-          # 签名相关的检查结果放在日志最后，截图再多也看得到。
-          if [ -f summary.txt ]; then
-            echo "::notice title=summary::$(sed 's/%/%25/g' summary.txt | awk '{printf "%s%%0A", $0}')"
-            echo "=====BEGIN summary====="
-            cat summary.txt
-            echo "=====END summary====="
-          fi
-          if [ -f "$RUNNER_TEMP/selftest.log" ] && ! grep -q "签名流程自测通过" "$RUNNER_TEMP/selftest.log"; then
-            echo "=====BEGIN 签名流程自测的最后 60 行====="
-            tail -60 "$RUNNER_TEMP/selftest.log"
-            echo "=====END 签名流程自测====="
-          fi
-          # 自动化页：同样裁出窗口一带缩小，放在后面，日志只看末尾几千行时也在。
-          for name in automation; do
-            [ -f "$name.png" ] || continue
-            width=$(sips -g pixelWidth "$name.png" | awk '/pixelWidth/{print $2}')
-            height=$(sips -g pixelHeight "$name.png" | awk '/pixelHeight/{print $2}')
-            cw=$(( width < 1000 ? width : 1000 )); ch=$(( height < 700 ? height : 700 ))
-            if sips -c "$ch" "$cw" "$name.png" --out "$name-window.png" >/dev/null 2>&1; then
-              sips -Z 700 -s format jpeg -s formatOptions 50 "$name-window.png" --out "$name-window.jpg" >/dev/null
-              echo "=====BEGIN $name-window.jpg====="
-              base64 -b 76 -i "$name-window.jpg"
-              echo "=====END $name-window.jpg====="
-            fi
-          done
-          # 关于页（带赞赏码）：设置窗口在屏幕正中，裁出窗口一带缩小后打在最后。
-          if [ -f about.png ]; then
-            width=$(sips -g pixelWidth about.png | awk '/pixelWidth/{print $2}')
-            height=$(sips -g pixelHeight about.png | awk '/pixelHeight/{print $2}')
-            cw=$(( width < 1000 ? width : 1000 )); ch=$(( height < 700 ? height : 700 ))
-            if sips -c "$ch" "$cw" about.png --out about-window.png >/dev/null 2>&1; then
-              sips -Z 700 -s format jpeg -s formatOptions 50 about-window.png --out about-window.jpg >/dev/null
-              echo "=====BEGIN about-window.jpg（${width}x${height} 截图的中间 ${cw}x${ch}）====="
-              base64 -b 76 -i about-window.jpg
-              echo "=====END about-window.jpg====="
-            fi
-          fi
-          if [ -f "$RUNNER_TEMP/smoke.log" ] && ! grep -q "冒烟测试通过" "$RUNNER_TEMP/smoke.log"; then
-            echo "=====BEGIN 冒烟测试的最后 80 行====="
-            tail -80 "$RUNNER_TEMP/smoke.log"
-            echo "=====END 冒烟测试====="
-          fi
-          # 更新测试没通过时，把它的最后 100 行放在整个日志的最后。
-          if [ -f "$RUNNER_TEMP/update.log" ] && ! grep -q "更新测试通过" "$RUNNER_TEMP/update.log"; then
-            echo "=====BEGIN 更新测试的最后 100 行====="
-            tail -100 "$RUNNER_TEMP/update.log"
-            echo "=====END 更新测试====="
-          fi
-          if [ -f "$RUNNER_TEMP/migration.log" ] && ! grep -q "迁移测试通过" "$RUNNER_TEMP/migration.log"; then
-            echo "=====BEGIN 迁移测试的最后 80 行====="
-            tail -80 "$RUNNER_TEMP/migration.log"
-            echo "=====END 迁移测试====="
-          fi
-          if [ -f "$RUNNER_TEMP/extension.log" ] && ! grep -q "扩展测试通过" "$RUNNER_TEMP/extension.log"; then
-            echo "=====BEGIN 扩展测试的最后 150 行====="
-            tail -150 "$RUNNER_TEMP/extension.log"
-            echo "=====END 扩展测试====="
-          fi
-          # 没通过的步骤：最后几十行另外做成一条标注，在合并请求的检查页上直接能看到。
-          for pair in "smoke.log:冒烟测试通过" "migration.log:迁移测试通过" "extension.log:扩展测试通过" "update.log:更新测试通过" "legacy.log:从改名前的版本更新的测试通过" "selftest.log:签名流程自测通过"; do
-            file="$RUNNER_TEMP/${pair%%:*}"
-            [ -f "$file" ] || continue
-            grep -q "${pair#*:}" "$file" && continue
-            echo "::error title=${pair%%:*}::$(grep -v '^=====\|^[A-Za-z0-9+/=]\{60,\}$' "$file" | cut -c1-240 | tail -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
-          done
-          if [ -f "$RUNNER_TEMP/legacy.log" ] && ! grep -q "从改名前的版本更新的测试通过" "$RUNNER_TEMP/legacy.log"; then
-            echo "=====BEGIN 从改名前的版本更新的最后 120 行====="
-            tail -120 "$RUNNER_TEMP/legacy.log"
-            echo "=====END 从改名前的版本更新====="
-          fi
+        run: bash Scripts/ci/report.sh
+      - name: 清理测试进程与钥匙串
+        if: always()
+        run: bash Scripts/ci/cleanup.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proxi-ci-migration
+          path: |
+            screenshots/
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/*-status.json
+            ${{ runner.temp }}/fixture-requests*.jsonl
+          retention-days: 7
+
+  update:
+    name: 一键更新
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxi-ci-dist
+          path: ${{ runner.temp }}
+      - name: 还原产物
+        run: bash Scripts/ci/unpack.sh
+      - name: 准备独立测试环境
+        run: bash Scripts/ci/prepare.sh
+      - name: update-e2e
+        run: bash Scripts/ci/update-e2e.sh
+      - name: 收集诊断和截图
+        if: always()
+        run: bash Scripts/ci/report.sh
+      - name: 清理测试进程与钥匙串
+        if: always()
+        run: bash Scripts/ci/cleanup.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proxi-ci-update
+          path: |
+            screenshots/
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/*-status.json
+            ${{ runner.temp }}/fixture-requests*.jsonl
+          retention-days: 7
+
+  rename:
+    name: 改名前版本更新
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxi-ci-dist
+          path: ${{ runner.temp }}
+      - name: 还原产物
+        run: bash Scripts/ci/unpack.sh
+      - name: 准备独立测试环境
+        run: bash Scripts/ci/prepare.sh
+      - name: rename-e2e
+        run: bash Scripts/ci/rename-e2e.sh
+      - name: 收集诊断和截图
+        if: always()
+        run: bash Scripts/ci/report.sh
+      - name: 清理测试进程与钥匙串
+        if: always()
+        run: bash Scripts/ci/cleanup.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proxi-ci-rename
+          path: |
+            screenshots/
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/*-status.json
+            ${{ runner.temp }}/fixture-requests*.jsonl
+          retention-days: 7
+
+  signing:
+    name: 签名流程自测
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxi-ci-dist
+          path: ${{ runner.temp }}
+      - name: 还原产物
+        run: bash Scripts/ci/unpack.sh
+      - name: 选择 Xcode
+        run: bash Scripts/ci/select-xcode.sh
+      - name: 准备独立测试环境
+        run: bash Scripts/ci/prepare.sh
+      - name: signing-selftest
+        run: bash Scripts/ci/signing-selftest.sh
+      - name: 收集诊断和截图
+        if: always()
+        run: bash Scripts/ci/report.sh
+      - name: 清理测试进程与钥匙串
+        if: always()
+        run: bash Scripts/ci/cleanup.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proxi-ci-signing
+          path: |
+            screenshots/
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/*-status.json
+            ${{ runner.temp }}/fixture-requests*.jsonl
+          retention-days: 7
+
+  extension:
+    name: 扩展端到端
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxi-ci-dist
+          path: ${{ runner.temp }}
+      - name: 还原产物
+        run: bash Scripts/ci/unpack.sh
+      - name: 准备独立测试环境
+        run: bash Scripts/ci/prepare.sh
+      - name: migration-config
+        run: bash Scripts/ci/migration-config.sh
+      - name: extension-e2e
+        run: bash Scripts/ci/extension-e2e.sh
+      - name: 收集诊断和截图
+        if: always()
+        run: bash Scripts/ci/report.sh
+      - name: 清理测试进程与钥匙串
+        if: always()
+        run: bash Scripts/ci/cleanup.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proxi-ci-extension
+          path: |
+            screenshots/
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/*-status.json
+            ${{ runner.temp }}/fixture-requests*.jsonl
+          retention-days: 7
+
+  macos:
+    # 保留原有检查名字，分支保护和自动合并继续等全部检查成功。
+    name: 编译、测试、打包
+    needs: [scripts, build, smoke, migration, update, rename, signing, extension]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查全部结果
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 Scripts/ci/check-results.py
 
   auto-merge:
     name: 自动合并
@@ -1015,6 +301,7 @@ jobs:
     outputs:
       sha: ${{ steps.merge.outputs.sha }}
     steps:
+      - uses: actions/checkout@v4
       - name: 合并
         id: merge
         env:
@@ -1022,27 +309,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ github.event.pull_request.base.ref }}
-        run: |
-          state=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state,headRefOid --jq '.state + " " + .headRefOid')
-          if [ "$state" != "OPEN $HEAD_SHA" ]; then
-            echo "合并请求已经关闭，或者又有了新的提交（现在是 ${state}），交给新的那次测试。"
-            exit 0
-          fi
-          # 测的是「分支合进当时的 main」的结果；main 之后又有了新提交，合并出来的东西就没测过，不合。
-          tested_base=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.parents[0].sha')
-          current_base=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BASE" --jq '.object.sha')
-          if [ "$tested_base" != "$current_base" ]; then
-            echo "::error::测试之后 ${BASE} 又有了新提交（测的是 ${tested_base}，现在是 ${current_base}），没有合并。把 ${BASE} 合进分支再推一次，会重新测试并自动合并。"
-            exit 1
-          fi
-          # 压成一个提交合进去，main 保持线性；仓库不允许压缩合并时退回普通合并。
-          if ! gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA"; then
-            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --merge --match-head-commit "$HEAD_SHA"
-          fi
-          sha=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json mergeCommit --jq '.mergeCommit.oid')
-          [ -n "$sha" ] || { echo "::error::合并后没拿到合并提交"; exit 1; }
-          echo "已合并：$sha"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        run: bash Scripts/ci/auto-merge.sh
 
   plan-release:
     name: 看要不要发版
@@ -1064,19 +331,7 @@ jobs:
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          # 只认最上面一节，标题必须是「## 0.8.0（2026-09-28）」：写错了（v0.8.0、0.8.0-beta）就报错，不悄悄发错版本或者不发。
-          first=$(grep -m1 '^## ' CHANGELOG.md || true)
-          version=$(printf '%s\n' "$first" | sed -n 's/^## \([0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}\)（.*/\1/p')
-          [ -n "$version" ] || { echo "::error::CHANGELOG.md 最上面一节的标题要写成「## 0.8.0（2026-09-28）」，现在是：${first}"; exit 1; }
-          # 发布过（有正式的 Release，不是草稿）才算：标签在、发布却失败了的版本下次合并时再发。
-          if [ "$(gh release view "v${version}" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || true)" = "false" ]; then
-            echo "v${version} 已经发布过，这次不发版。要发版就在 CHANGELOG.md 最上面加一节新版本。"
-            exit 0
-          fi
-          echo "发布 v${version}，提交 $(git rev-parse HEAD)"
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: bash Scripts/ci/plan-release.sh
 
   release:
     name: 发布新版本

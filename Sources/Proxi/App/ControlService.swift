@@ -217,6 +217,19 @@ final class ControlService: ObservableObject {
         proxy["targetStates"] = Dictionary(uniqueKeysWithValues: state.targetStatuses.map { ($0.key.rawValue, $0.value.rawValue) })
         proxy["systemProxyChangedExternally"] = state.systemProxyChangedExternally
         var result: [String: Any] = ["text": text, "proxy": proxy, "systemProxy": state.snapshot.summary, "version": UpdateChecker.currentVersion]
+        // 自动化和 CI 按状态确认启动、切页和更新，不依赖日志的中文措辞。
+        let settings = SettingsWindowController.shared
+        result["busy"] = state.busy
+        result["interface"] = [
+            "english": AppLanguage.isEnglish,
+            "language": LanguageSetting.current.rawValue,
+            "visibleWindows": NSApp?.windows.filter { $0.isVisible && $0.frame.width > 100 && $0.frame.height > 50 }.count ?? 0,
+            "settingsVisible": settings.isShowing,
+            "settingsPage": settings.navigation.page.rawValue,
+        ] as [String: Any]
+        if let release = state.updater.release {
+            result["update"] = ["version": release.version, "installing": state.updater.isInstalling] as [String: Any]
+        }
         switch state.health {
         case .ok: result["health"] = "ok"
         case .down: result["health"] = "down"
