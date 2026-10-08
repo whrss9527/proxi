@@ -153,6 +153,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     let navigation = SettingsNavigation()
     private var window: NSWindow?
+    private var handoff: SettingsWindowHandoff?
+    private var presentationRequest: UInt?
     private var otherShownObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
 
@@ -167,6 +169,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             guard let self, let window = self.window, window.isVisible else { return }
             // 对方已经取得焦点并完成绘制，直接隐藏旧窗口，避免关闭动画露出桌面。
             window.orderOut(nil)
+            self.cancelHandoff()
         }
     }
 
@@ -176,7 +179,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             navigation.page = page
         }
         if window == nil {
-            window = makeWindow()
+            let created = makeWindow()
+            window = created
+            handoff = SettingsWindowHandoff(window: created) { [weak self] in
+                // 目标未能接手时，侧栏也恢复到仍然显示的本地页面。
+                self?.presentationRequest = nil
+                self?.navigation.didShow()
+            }
         }
         // 从 Proxi 的设置窗口切过来时放在同一个位置、同样大小。
         if let window, !window.isVisible, let frame = SettingsWindowSync.savedFrame() {
@@ -186,6 +195,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // 先提交隐藏期间累积的页面布局，再把窗口交给 WindowServer。
         window?.contentView?.layoutSubtreeIfNeeded()
         window?.displayIfNeeded()
+        presentationRequest = handoff?.beginShowing()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         if let window {
@@ -200,12 +210,30 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     /// 激活是异步的；仅在窗口真正成为前台窗口且首帧画好后，才让另一边隐藏。
     private func announceWhenReady() {
+        guard let request = presentationRequest else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let window = self?.window, window.isVisible, window.isKeyWindow, NSApp.isActive else { return }
-            window.contentView?.layoutSubtreeIfNeeded()
-            window.displayIfNeeded()
-            SettingsWindowSync.announceShown()
+            guard let self, self.presentationRequest == request else { return }
+            if self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive) == true {
+                self.presentationRequest = nil
+                SettingsWindowSync.announceShown()
+            } else if let window = self.window, window.isVisible, window.isKeyWindow, NSApp.isActive {
+                // 等显示服务器确认显现；不是用固定延时猜测目标窗口已经画好。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 120) { [weak self] in
+                    guard self?.presentationRequest == request else { return }
+                    self?.announceWhenReady()
+                }
+            }
         }
+    }
+
+    func prepareToHandOff() {
+        presentationRequest = nil
+        handoff?.freeze()
+    }
+
+    func cancelHandoff() {
+        presentationRequest = nil
+        handoff?.cancel()
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -223,6 +251,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        cancelHandoff()
         NSApp.setActivationPolicy(.accessory)
     }
 
@@ -304,6 +333,7 @@ struct SettingsRootView: View {
     private var sidebarSelection: Binding<SidebarItem?> {
         Binding(get: { navigation.sidebarItem }, set: { item in
             guard let item else { return }
+            SettingsWindowController.shared.cancelHandoff()
             navigation.select(item)
             switch item {
             case .engine: break

@@ -31,6 +31,7 @@ enum SettingsWindowSync {
     /// 要切到另一边（让它打开设置窗口）之前调用。macOS 14 起程序不能自己抢到前台，要由在前台的程序先让出来，
     /// 另一边的窗口出来时才会到前台。
     static func yieldToOther() {
+        SettingsWindowController.shared.prepareToHandOff()
         NSApp.yieldActivation(toApplicationWithBundleIdentifier: other)
     }
 
