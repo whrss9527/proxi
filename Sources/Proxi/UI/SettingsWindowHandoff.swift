@@ -87,7 +87,7 @@ final class SettingsWindowHandoff {
     static func isVisibleOnScreen(_ window: NSWindow) -> Bool {
         guard window.windowNumber > 0,
               let windows = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(window.windowNumber)) as? [[String: Any]],
-              let info = windows.first,
+              let info = windows.first(where: { ($0[kCGWindowNumber as String] as? Int) == window.windowNumber }),
               (info[kCGWindowIsOnscreen as String] as? Bool) == true,
               let alpha = info[kCGWindowAlpha as String] as? Double else { return false }
         return alpha >= 0.99
