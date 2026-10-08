@@ -46,6 +46,16 @@ wait "$waiter" || true
 wait_started
 wait_json "$app" '.interface.language == "system"'
 stop_app Proxi
+# 同一 runner 测已发布版本和本次产物，复用 Meno 的 CPU 时间 / idlew 增量方法。
+baseline="$RUNNER_TEMP/footprint-baseline"
+mkdir -p "$baseline"
+curl -fsSL --max-time 120 --retry 3 https://github.com/whrss9527/proxi/releases/download/v0.16.4/Proxi-macos.zip -o "$baseline/Proxi-macos.zip"
+curl -fsSL --max-time 120 --retry 3 https://github.com/whrss9527/proxi/releases/download/v0.16.4/SHA256SUMS.txt -o "$baseline/SHA256SUMS.txt"
+(cd "$baseline" && grep '  Proxi-macos.zip$' SHA256SUMS.txt | shasum -a 256 -c -)
+ditto -x -k "$baseline/Proxi-macos.zip" "$baseline/unpacked"
+codesign --verify --deep --strict "$baseline/unpacked/Proxi.app"
+xattr -dr com.apple.quarantine "$baseline/unpacked/Proxi.app" || true
+bash Scripts/measure-footprint.sh "$baseline/unpacked/Proxi.app" dist/Proxi.app
 # 后面的步骤用回中文。
 defaults write "$domain" AppleLanguages -array zh-Hans
 ls -la screenshots

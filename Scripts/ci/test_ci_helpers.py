@@ -81,6 +81,23 @@ class HelperTests(unittest.TestCase):
     def shell(self, body, env=None):
         return subprocess.run(['bash', '-c', f'source {shlex.quote(str(CI / "common.sh"))}; ' + body], capture_output=True, text=True, cwd=ROOT, env=env, timeout=15)
 
+    def test_detection_fixture_has_no_dns_dependency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            port_file = Path(tmp) / 'port'
+            # 替换反向 DNS；服务若误调用它就立即失败，不能靠延长等待掩盖。
+            launcher = "import socket,runpy,sys; socket.getfqdn=lambda *_: (_ for _ in ()).throw(RuntimeError('unexpected DNS')); sys.argv=['fixture',sys.argv[1]]; runpy.run_path(sys.argv[2] if len(sys.argv)>2 else 'Scripts/ci/detection-fixture.py',run_name='__main__')"
+            server = subprocess.Popen(['python3', '-c', launcher, str(port_file)], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 4
+                while not port_file.exists() and server.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(port_file.exists(), 'fixture did not bind without DNS')
+                with urllib.request.urlopen(f'http://127.0.0.1:{port_file.read_text()}/health', timeout=2) as response:
+                    self.assertEqual(response.read(), b'fixture ok')
+            finally:
+                server.terminate()
+                server.communicate(timeout=3)
+
     def test_wait_retries_and_fails_on_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
             flag = shlex.quote(str(Path(tmp) / 'ready'))
