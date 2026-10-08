@@ -64,6 +64,14 @@ show_panel() {
   open 'proxi://panel'
   wait_json "$binary" '.interface.panelVisible == true'
 }
+# 旧版可能在启动完成前丢掉链接，或在检查更新期间忽略安装命令。
+# 安装一旦开始，旧版自身会拒绝重复安装；观察到下载请求后不再发送。
+app_update_requested() {
+  local app=$1 url=$2 port=$3 archive=$4
+  if fixture_requested "$port" "$archive"; then return 0; fi
+  open -a "$app" "$url" || return 1
+  return 1
+}
 file_contains() { grep -q -- "$2" "$1"; }
 file_not_contains() { ! grep -q -- "$2" "$1"; }
 proxy_matches() { [[ $(git config --global --includes --get http.proxy || true) == "$1" ]]; }
@@ -78,7 +86,7 @@ fixture_server() {
 fixture_requested() {
   local port=$1 path=$2
   [[ -f "$RUNNER_TEMP/fixture-requests-$port.jsonl" ]] || return 1
-  jq -e -s --arg path "$path" 'any(.[]; .path == $path and .status == 200)' "$RUNNER_TEMP/fixture-requests-$port.jsonl" >/dev/null
+  jq -e -s --arg path "$path" 'any(.[]; .method == "GET" and .path == $path and .status == 200)' "$RUNNER_TEMP/fixture-requests-$port.jsonl" >/dev/null
 }
 file_json_match() { [[ -f "$1" ]] && jq -e "$2" "$1" >/dev/null; }
 assert_for() {
@@ -90,4 +98,3 @@ assert_for() {
     sleep 0.25
   done
 }
-
