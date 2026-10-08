@@ -25,9 +25,14 @@ measure() {
   rm -f "$support/control.sock"
   "$bundle/Contents/MacOS/Proxi" > "$RUNNER_TEMP/footprint-$label.log" 2>&1 &
   app_pid=$!
-  wait_json "$bundle/Contents/MacOS/Proxi" '.interface.settingsVisible == false and .interface.panelVisible == false'
+  # 发布基线还没有新增的 interface 字段；公共状态确认就绪，窗口服务器确认实际没有窗口。
+  wait_json "$bundle/Contents/MacOS/Proxi" '.version != null and .proxy.state == "off"'
   sleep "$settle"
   kill -0 "$app_pid"
+  if dist/ci-window-ready com.whrss9527.proxyswitch; then
+    printf '::error::测量时出现了 Proxi 窗口（%s）\n' "$label"
+    exit 1
+  fi
   wake_start=$(wakeups "$app_pid")
   start=$(now); cpu_start=$(cpu_seconds "$app_pid")
   sleep "$window"
