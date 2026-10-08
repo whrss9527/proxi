@@ -30,7 +30,9 @@ final class ExtensionTests: XCTestCase {
     func testHelperRefusesUnknownCore() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("fake-core-\(UUID().uuidString)")
         try Data("not the core".utf8).write(to: file)
-        XCTAssertThrowsError(try HelperInstaller.verifyCore(file.path, removeIfWrong: false))
+        XCTAssertThrowsError(try HelperInstaller.verifyCore(file.path, removeIfWrong: false)) { error in
+            XCTAssertEqual((error as? HelperError)?.diagnosticCode, "core_checksum")
+        }
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "只检查来源时不删")
         XCTAssertThrowsError(try HelperInstaller.verifyCore(file.path, removeIfWrong: true))
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "复制到助手目录里的认不出的内核要删掉")

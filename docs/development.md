@@ -51,3 +51,29 @@ defaults write com.whrss9527.proxyswitch AppleLanguages -array en   # 删掉这�
 未知 `targets` 名称原样写回。混合范围只应用本机支持的部分；仅有未知范围时显示「这台 Mac 不支持」，面板和开启入口均拒绝执行，不会回落到系统代理。缺少 `targets` 的旧配置仍默认系统代理。
 
 iCloud 拉取先检查外层和内层格式；遇到超过 2 的格式，提示更新 Proxi，不应用其内容。写入也在文件协调区内重新检查目标，冲突解决在确认所有版本可读、成功写入后才清理冲突，旧目录迁移也不会覆盖未来格式。此保护要求客户端已经升级到 0.16.3 或更高版本，无法改变旧二进制的写回行为。
+
+### CI 的独立检查
+
+`.github/workflows/ci.yml` 调用 `Scripts/ci/` 的脚本。先检查脚本，再编译、跑单元测试和打包；将 `dist/` 和截图封装成一个 tar 上传，保留应用的可执行权限与符号链接。后续各项在独立的 macOS runner 上读取同一份产物并行执行：
+
+| 检查 | 脚本 |
+| --- | --- |
+| 中文、英文冒烟 | `smoke-zh.sh`、`smoke-en.sh` |
+| 旧配置迁移 | `migration-config.sh` |
+| 一键更新、临时位置安装 | `update-e2e.sh` |
+| 改名前版本更新 | `rename-e2e.sh` |
+| 签名与公证流程自测 | `signing-selftest.sh` |
+| 扩展端到端 | 先运行 `migration-config.sh`，再运行 `extension-e2e.sh` |
+
+每项通过 `prepare.sh` 创建自己的配置、假同步目录和临时钥匙串，通过 `cleanup.sh` 清理进程、钥匙串和假发布服务；失败时也运行清理，并保留日志、状态和截图。汇总检查沿用「编译、测试、打包」这个名字，所有分项成功才允许自动合并。缺失、跳过或取消的检查也算未通过；自动合并仍核对测试的分支提交和 main 提交。
+
+本机可安全运行脚本静态检查和轮询函数的测试，不启动应用或修改代理设置：
+
+```bash
+bash Scripts/ci/check-scripts.sh       # bash 语法、shellcheck 和 Python 测试
+python3 Scripts/check-localization.py # 两种语言的界面文字
+```
+
+界面和更新脚本会写测试账户的偏好设置、配置与钥匙串；只在 CI 或独立的专用测试账户中运行。专用账户重现时，先准备 `RUNNER_TEMP` 临时目录、可写的 `GITHUB_ENV` 文件，以及打包好的 `dist/`；显式设置 `PROXI_CI_ALLOW_GUI=1`，然后先执行 `prepare.sh`，读取其输出的环境变量，再运行所需脚本，结束时执行 `cleanup.sh`。不要在日常使用的账户中运行这些脚本。
+
+等待统一使用有截止时间的 `wait_for`。`status --json` 增加 `busy`、`interface`（实际语言、可见窗口数、面板是否显示、设置页和是否显示）以及存在新版本时的 `update`；单次 CLI 读取也有超时。启动、切页和替换后的版本按这些状态确认，更新下载按假服务实际收到并成功响应的请求确认。需要检查日志事件时只匹配稳定的机器标记，例如 `event=extension.request`；特权错误的机器标记仅在设置 `PROXI_CI_DIAGNOSTICS=1` 时输出，正常错误说明保持原样。

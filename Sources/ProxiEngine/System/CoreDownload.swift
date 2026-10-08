@@ -153,7 +153,7 @@ final class CoreDownload: ObservableObject {
     }
 
     private func download(_ url: URL, title: String, to destination: URL) async throws {
-        Log.info("下载 \(url.absoluteString)")
+        Log.info("event=core.download url=\(url.absoluteString)")
         phase = .downloading(title, nil)
         let routes = NetworkRoute.routes(for: url, corePort: nil, system: SystemProxy.current())
         var lastError: Error = CoreDownloadError.network

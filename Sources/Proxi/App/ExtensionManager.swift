@@ -226,14 +226,14 @@ final class ExtensionManager: ObservableObject {
 
     // MARK: - 下载安装
 
-    /// 扩展的网络请求都经这里：没开启时一律不发（CI 按日志里的「扩展网络请求」确认关着时没有请求）。
+    /// 扩展的网络请求都经这里：没开启时一律不发；稳定的事件名也供 CI 确认关着时没有请求。
     private func checkAllowed(_ url: URL) throws {
         guard state.enabled else {
             Log.error("扩展：没开启，拒绝访问 \(url.absoluteString)")
             throw ExtensionError.notEnabled
         }
         guard !needsDisclaimer else { throw ExtensionError.notAccepted }
-        Log.info("扩展网络请求 \(url.absoluteString)")
+        Log.info("event=extension.request url=\(url.absoluteString)")
     }
 
     private func routes(for url: URL) -> [NetworkRoute] {

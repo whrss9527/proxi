@@ -66,7 +66,11 @@ struct HelperStatus: Equatable {
 
 struct HelperError: LocalizedError {
     let message: String
-    init(_ message: String) { self.message = message }
+    let diagnosticCode: String?
+    init(_ message: String, diagnosticCode: String? = nil) {
+        self.message = message
+        self.diagnosticCode = diagnosticCode
+    }
     var errorDescription: String? { message }
 }
 
@@ -236,7 +240,7 @@ enum HelperInstaller {
         let hash = (try? Checksums.sha256(of: URL(fileURLWithPath: path))) ?? ""
         guard CorePin.binarySHA256s.contains(hash) else {
             if removeIfWrong { unlink(path) }
-            throw HelperError(L("内核的校验和不对（%@），没有安装", hash.isEmpty ? L("读不了") : String(hash.prefix(12))))
+            throw HelperError(L("内核的校验和不对（%@），没有安装", hash.isEmpty ? L("读不了") : String(hash.prefix(12))), diagnosticCode: "core_checksum")
         }
     }
 
@@ -875,6 +879,11 @@ enum HelperCommand {
                 return 2
             }
         } catch {
+            // 专用 CI 账户需要确认拒绝的原因，不按会翻译或改写的错误文案判断。
+            if ProcessInfo.processInfo.environment["PROXI_CI_DIAGNOSTICS"] == "1",
+               let code = (error as? HelperError)?.diagnosticCode {
+                FileHandle.standardError.write(Data("event=helper.reject reason=\(code)\n".utf8))
+            }
             fail(error.localizedDescription)
             return 1
         }
