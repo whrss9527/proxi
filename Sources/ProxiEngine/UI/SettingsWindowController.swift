@@ -155,6 +155,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var handoff: SettingsWindowHandoff?
     private var presentationRequest: UInt?
+    private var incomingLayout: SettingsWindowLayout?
+    private(set) var outgoingLayout: SettingsWindowLayout?
     private var otherShownObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
 
@@ -173,7 +175,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func show(page: SettingsPage?) {
+    func show(page: SettingsPage?, layout: SettingsWindowLayout? = nil) {
         navigation.didShow()
         if let page {
             navigation.page = page
@@ -193,7 +195,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         // 设置窗口也保持后台应用身份；切页不再向 Dock 添加、移除应用图标。
         // 先提交隐藏期间累积的页面布局，再把窗口交给 WindowServer。
+        if let window, !window.isVisible {
+            incomingLayout = layout ?? SettingsWindowSync.savedSidebarLayout()
+        }
         window?.contentView?.layoutSubtreeIfNeeded()
+        if let window { incomingLayout?.apply(to: window) }
         window?.displayIfNeeded()
         presentationRequest = handoff?.beginShowing()
         window?.makeKeyAndOrderFront(nil)
@@ -213,8 +219,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard let request = presentationRequest else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.presentationRequest == request else { return }
+            // 隐藏窗口重新进入 SwiftUI 布局后再应用一次，避免旧分栏宽度覆盖交接值。
+            if let window = self.window { self.incomingLayout?.apply(to: window) }
             if self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive) == true {
                 self.presentationRequest = nil
+                self.incomingLayout = nil
                 SettingsWindowSync.announceShown()
             } else if let window = self.window, window.isVisible, window.isKeyWindow, NSApp.isActive {
                 // 等显示服务器确认显现；不是用固定延时猜测目标窗口已经画好。
@@ -227,11 +236,17 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func prepareToHandOff() {
+        if let window, window.isVisible {
+            outgoingLayout = SettingsWindowLayout.capture(from: window)
+            SettingsWindowSync.saveSidebarLayout(outgoingLayout)
+        }
         presentationRequest = nil
         handoff?.freeze()
     }
 
     func cancelHandoff() {
+        incomingLayout = nil
+        outgoingLayout = nil
         presentationRequest = nil
         handoff?.cancel()
     }

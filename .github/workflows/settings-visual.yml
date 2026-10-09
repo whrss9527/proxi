@@ -13,15 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash Scripts/ci/select-xcode.sh
-      - name: Download released apps for baseline
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p dist
-          gh release download v0.16.5 --repo "$GITHUB_REPOSITORY" -p Proxi-macos-arm64.zip -p Proxi-Engine-0.16.5.zip -p SHA256SUMS.txt -D dist
-          (cd dist && shasum -a 256 --ignore-missing -c SHA256SUMS.txt)
-          ditto -x -k dist/Proxi-macos-arm64.zip dist
-          ditto -x -k dist/Proxi-Engine-0.16.5.zip dist
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: settings-visual-26-${{ github.sha }}
+          restore-keys: settings-visual-26-
+      - name: Build candidate apps
+        run: VERSION=0.0.0 ARCHS= CONFIG=debug bash Scripts/build-app.sh
+      - name: Test window layout
+        run: swift test --filter SettingsWindowLayoutTests
       - name: Verify layer-backed cover on screen
         run: |
           swiftc -parse-as-library Sources/Proxi/UI/SettingsWindowHandoff.swift Scripts/ci/check-handoff-layer.swift -o "$RUNNER_TEMP/check-handoff-layer"
