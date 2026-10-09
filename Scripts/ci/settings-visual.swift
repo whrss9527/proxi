@@ -73,8 +73,15 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         try NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])!.write(to: backdropURL)
         try NSWorkspace.shared.setDesktopImageURL(backdropURL, for: NSScreen.main!, options: [:])
         NSWorkspace.shared.open(URL(string: "proxi://settings?page=general")!)
-        try await Task.sleep(for: .seconds(2))
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        var content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let readyDeadline = Date().addingTimeInterval(20)
+        while !content.windows.contains(where: { $0.owningApplication?.bundleIdentifier == "com.whrss9527.proxyswitch" && $0.frame.width >= 760 }) {
+            guard Date() < readyDeadline else { fatalError("主程序设置未显示") }
+            try await Task.sleep(for: .seconds(1))
+            NSWorkspace.shared.open(URL(string: "proxi://settings?page=general")!)
+            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        }
+        try await Task.sleep(for: .seconds(1))
         let display = content.displays[0]
         let configuration = SCStreamConfiguration()
         configuration.colorSpaceName = CGColorSpace.sRGB
