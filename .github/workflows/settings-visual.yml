@@ -1,0 +1,24 @@
+name: settings-visual
+on:
+  push:
+    branches: [fix/settings-handoff-compositing]
+permissions:
+  contents: read
+jobs:
+  visual:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash Scripts/ci/select-xcode.sh
+      - name: Build apps
+        run: VERSION=0.0.0 ARCHS= CONFIG=debug bash Scripts/build-app.sh
+      - name: Observe real sidebar handoff
+        run: bash Scripts/ci/settings-visual.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: settings-visual
+          path: |
+            screenshots/
+            ${{ runner.temp }}/settings-visual.log
