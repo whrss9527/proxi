@@ -4,8 +4,10 @@ on:
     branches: [fix/settings-handoff-compositing]
 permissions:
   contents: read
+  actions: read
 jobs:
   visual:
+    if: ${{ !startsWith(github.event.head_commit.message, 'diagnostic:') }}
     runs-on: macos-26
     timeout-minutes: 20
     steps:
@@ -22,3 +24,28 @@ jobs:
           path: |
             screenshots/
             ${{ runner.temp }}/settings-visual.log
+
+  baseline-frames:
+    if: ${{ startsWith(github.event.head_commit.message, 'diagnostic:') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download captured baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: settings-visual
+          run-id: 37873067481
+          github-token: ${{ github.token }}
+          path: baseline
+      - run: python3 -m pip install Pillow
+      - name: Export diagnostic frames
+        run: |
+          python3 - <<'PYCODE'
+          import base64,io
+          from pathlib import Path
+          from PIL import Image
+          for p in sorted(Path('baseline').rglob('*.png')):
+              image=Image.open(p).convert('RGB')
+              data=io.BytesIO()
+              image.save(data,format='JPEG',quality=88)
+              print('FRAME',p.stem,base64.b64encode(data.getvalue()).decode())
+          PYCODE
