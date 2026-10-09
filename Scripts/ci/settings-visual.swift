@@ -34,6 +34,34 @@ func dumpTree(_ root: AXUIElement, depth: Int = 0) {
           attribute(root, kAXTitleAttribute) ?? attribute(root, kAXDescriptionAttribute) ?? "" as CFString)
     for child in attribute(root, kAXChildrenAttribute) as? [AXUIElement] ?? [] { dumpTree(child, depth: depth + 1) }
 }
+func pageIdentifiers(_ root: AXUIElement, depth: Int = 0) -> Set<String> {
+    guard depth < 25 else { return [] }
+    var found = Set<String>()
+    if let identifier = attribute(root, kAXIdentifierAttribute) as? String,
+       identifier.hasPrefix("settings-page-") { found.insert(identifier) }
+    for child in attribute(root, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+        found.formUnion(pageIdentifiers(child, depth: depth + 1))
+    }
+    return found
+}
+func dividerX(_ root: AXUIElement) -> CGFloat {
+    guard let divider = splitter(root), let value = attribute(divider, kAXPositionAttribute) else {
+        fatalError("找不到分栏位置")
+    }
+    var point = CGPoint.zero
+    AXValueGetValue(value as! AXValue, .cgPoint, &point)
+    return point.x
+}
+func visibleSettingsOwners() -> Set<pid_t> {
+    let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+    return Set(windows.compactMap { item in
+        guard let bounds = item[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary), rect.width >= 760,
+              item[kCGWindowLayer as String] as? Int == 0,
+              (item[kCGWindowAlpha as String] as? Double ?? 0) >= 0.99 else { return nil }
+        return item[kCGWindowOwnerPID as String] as? pid_t
+    })
+}
 final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
     var index = 0
     var rect: CGRect = .zero
@@ -54,6 +82,19 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         // 回调只拷贝像素。PNG 编码放到停止采样之后，免得漏掉只出现一帧的闪烁。
         captured.append((Data(bytes: base, count: bytes * height), width, height, bytes))
         index += 1
+    }
+    func checkBackground() throws {
+        let samples: [[Int]] = captured.map { data, _, _, bytes in
+            let offset = Int((rect.minY + 150) * scale) * bytes + Int((rect.minX + 4) * scale) * 4
+            return (0..<3).map { Int(data[offset + $0]) }
+        }
+        guard let first = samples.first else { fatalError("没有屏幕画面") }
+        for (index, sample) in samples.enumerated() {
+            guard zip(first, sample).allSatisfy({ abs($0.0 - $0.1) <= 4 }) else {
+                fatalError("第 \(index) 帧侧栏底色改变或露出桌面：\(first) → \(sample)")
+            }
+        }
+        print("PASS sidebar background", first)
     }
     func save() throws {
         for (i, item) in captured.enumerated() {
@@ -132,17 +173,19 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
             }
             CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
         } else { fatalError("找不到分栏拖动条") }
-        for (step, pair) in [("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "Extensions"), ("com.whrss9527.proxyswitch", "Nodes & Subscriptions"), ("com.whrss9527.proxyswitch.engine", "Diagnose"), ("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "General")].enumerated() {
-            let (appID, title) = pair
-            if step == -1 {
-                print("APPEARANCE", step, CACurrentMediaTime())
-                let task = Process()
-                task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                task.arguments = ["-e", "tell application \"System Events\" to tell appearance preferences to set dark mode to \(step == 4 ? "true" : "false")"]
-                try task.run()
-                try await Task.sleep(for: .seconds(2))
-            }
-            try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(for: .milliseconds(300))
+        let expectedDivider = dividerX(mainRoot)
+        guard expectedDivider < frames.rect.minX + 230 else { fatalError("未实际改变侧栏宽度") }
+        let mainID = "com.whrss9527.proxyswitch"
+        let engineID = mainID + ".engine"
+        for (appID, title, destinationID, page) in [
+            (mainID, "Advanced", engineID, "advanced"),
+            (engineID, "Extensions", mainID, "extensions"),
+            (mainID, "Nodes & Subscriptions", engineID, "nodes"),
+            (engineID, "Diagnose", mainID, "diagnostics"),
+            (mainID, "Advanced", engineID, "advanced"),
+            (engineID, "General", mainID, "general")
+        ] {
             let app = NSRunningApplication.runningApplications(withBundleIdentifier: appID).first!
             let root = AXUIElementCreateApplication(app.processIdentifier)
             guard let target = button(root, title: title) else { dumpTree(root); fatalError("找不到侧栏按钮：\(title)") }
@@ -157,12 +200,34 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
             CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
             try await Task.sleep(for: .milliseconds(80))
             CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
-            try await Task.sleep(for: .seconds(1))
+            let destination = NSRunningApplication.runningApplications(withBundleIdentifier: destinationID).first!
+            let destinationRoot = AXUIElementCreateApplication(destination.processIdentifier)
+            let deadline = Date().addingTimeInterval(4)
+            while true {
+                let shown = visibleSettingsOwners()
+                if shown.contains(destination.processIdentifier) {
+                    let identifiers = pageIdentifiers(destinationRoot)
+                    guard identifiers == ["settings-page-" + page] else {
+                        dumpTree(destinationRoot)
+                        fatalError("目标窗口显现时露出了别的页面：\(identifiers)，预期 \(page)")
+                    }
+                    guard abs(dividerX(destinationRoot) - expectedDivider) <= 1 else {
+                        fatalError("切页改变了侧栏宽度")
+                    }
+                    if !shown.contains(app.processIdentifier) { break }
+                }
+                guard Date() < deadline else { fatalError("切页没有完成：\(title)") }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            print("PASS", title, "divider", dividerX(destinationRoot))
+            try await Task.sleep(for: .milliseconds(300))
         }
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(for: .milliseconds(300))
         try await stream.stopCapture()
         queue.sync {}
         try frames.save()
+        guard frames.index > 10 else { fatalError("屏幕采样不足") }
+        try frames.checkBackground()
         print("frames:", frames.index)
     }
 }
