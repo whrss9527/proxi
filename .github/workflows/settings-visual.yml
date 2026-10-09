@@ -43,7 +43,10 @@ jobs:
           import base64,io
           from pathlib import Path
           from PIL import Image
-          for p in sorted(Path('baseline').rglob('*.png')):
+          files=sorted(Path('baseline').rglob('*'))
+          print('CWD',Path.cwd(),'FILES',[(str(p),p.stat().st_size) for p in files if p.is_file()])
+          for p in files:
+              if not p.is_file() or p.suffix.lower() not in ('.png','.jpg'): continue
               image=Image.open(p).convert('RGB')
               data=io.BytesIO()
               image.save(data,format='JPEG',quality=88)
