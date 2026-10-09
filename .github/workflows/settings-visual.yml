@@ -50,5 +50,6 @@ jobs:
               image=Image.open(p).convert('RGB')
               data=io.BytesIO()
               image.save(data,format='JPEG',quality=88)
-              print('FRAME',p.stem,base64.b64encode(data.getvalue()).decode())
+              encoded=base64.b64encode(data.getvalue()).decode()
+              for i in range(0,len(encoded),2048): print('FRAME',p.stem,encoded[i:i+2048])
           PYCODE
