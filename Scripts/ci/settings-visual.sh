@@ -21,14 +21,3 @@ printf '%s' '{"extension":{"enabled":true,"acceptedVersion":1}}' > "$support/sta
 PROXI_TEST_ACCEPT_EXTENSION=1 dist/Proxi.app/Contents/MacOS/Proxi -AppleLanguages '(en)' >/dev/null 2>&1 &
 swiftc -parse-as-library Scripts/ci/settings-visual.swift -o "$RUNNER_TEMP/settings-visual"
 "$RUNNER_TEMP/settings-visual" "$PWD/screenshots"
-
-if [[ ${PROXI_TEST_EXPORT_FRAMES:-0} == 1 ]]; then
-  python3 - <<'PYCODE'
-import base64
-from pathlib import Path
-for path in sorted(Path('screenshots').glob('[0-9]*.png')):
-    encoded = base64.b64encode(path.read_bytes()).decode()
-    for start in range(0, len(encoded), 2048):
-        print('FRAME', path.stem, encoded[start:start + 2048])
-PYCODE
-fi

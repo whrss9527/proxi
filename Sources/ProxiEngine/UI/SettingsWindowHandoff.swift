@@ -35,6 +35,9 @@ final class SettingsWindowHandoff {
         frameView.addSubview(cover, positioned: .above, relativeTo: nil)
         cover.displayIfNeeded()
         self.cover = cover
+        // 在让出激活权之前提交遮罩，避免焦点变化先于这一层的绘制。
+        window.displayIfNeeded()
+        CATransaction.flush()
         armTimeout()
     }
 
