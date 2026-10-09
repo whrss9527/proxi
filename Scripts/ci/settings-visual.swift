@@ -20,6 +20,14 @@ func button(_ root: AXUIElement, title: String, depth: Int = 0) -> AXUIElement? 
     }
     return nil
 }
+func splitter(_ root: AXUIElement, depth: Int = 0) -> AXUIElement? {
+    guard depth < 25 else { return nil }
+    if attribute(root, kAXRoleAttribute) as? String == kAXSplitterRole { return root }
+    for child in attribute(root, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+        if let found = splitter(child, depth: depth + 1) { return found }
+    }
+    return nil
+}
 func dumpTree(_ root: AXUIElement, depth: Int = 0) {
     guard depth < 15 else { return }
     print(String(repeating: " ", count: depth), attribute(root, kAXRoleAttribute) ?? "?" as CFString,
@@ -108,6 +116,22 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         let queue = DispatchQueue(label: "screen-frames")
         try stream.addStreamOutput(frames, type: .screen, sampleHandlerQueue: queue)
         try await stream.startCapture()
+        let mainApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.whrss9527.proxyswitch").first!
+        let mainRoot = AXUIElementCreateApplication(mainApp.processIdentifier)
+        if let divider = splitter(mainRoot) {
+            var point = CGPoint.zero, size = CGSize.zero
+            AXValueGetValue(attribute(divider, kAXPositionAttribute) as! AXValue, .cgPoint, &point)
+            AXValueGetValue(attribute(divider, kAXSizeAttribute) as! AXValue, .cgSize, &size)
+            point.y += size.height / 2
+            print("DIVIDER_BEFORE", point, size)
+            CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+            for _ in 0..<12 {
+                point.x -= 5
+                CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+                try await Task.sleep(for: .milliseconds(16))
+            }
+            CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+        } else { fatalError("找不到分栏拖动条") }
         for (step, pair) in [("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "Extensions"), ("com.whrss9527.proxyswitch", "Nodes & Subscriptions"), ("com.whrss9527.proxyswitch.engine", "Diagnose"), ("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "General")].enumerated() {
             let (appID, title) = pair
             if step == -1 {
