@@ -5,7 +5,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require_macos_ci
 exec > >(tee "$RUNNER_TEMP/settings-visual.log") 2>&1
 mkdir -p screenshots
-osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true'
+# 此脚本只在专用测试账户中启动这两个进程；成功和失败都清理。
+trap 'pkill -x Proxi || true; pkill -x ProxiEngine || true' EXIT
+case "${PROXI_TEST_APPEARANCE:-dark}" in
+  dark) dark_mode=true ;;
+  light) dark_mode=false ;;
+  *) printf '%s\n' '未知测试外观' >&2; exit 1 ;;
+esac
+osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark_mode"
 support="$HOME/Library/Application Support/Proxi"
 mkdir -p "$support/Extensions"
 cp -R 'dist/Proxi Engine.app' "$support/Extensions/"
@@ -15,11 +22,13 @@ PROXI_TEST_ACCEPT_EXTENSION=1 dist/Proxi.app/Contents/MacOS/Proxi -AppleLanguage
 swiftc -parse-as-library Scripts/ci/settings-visual.swift -o "$RUNNER_TEMP/settings-visual"
 "$RUNNER_TEMP/settings-visual" "$PWD/screenshots"
 
-# 截图下载被网络策略拦截时，可从 CI 日志读取这些测试账户画面。
-python3 - <<'PYCODE'
+if [[ ${PROXI_TEST_EXPORT_FRAMES:-0} == 1 ]]; then
+  python3 - <<'PYCODE'
 import base64
 from pathlib import Path
-for p in sorted(Path('screenshots').glob('*.png')):
-    encoded=base64.b64encode(p.read_bytes()).decode()
-    for i in range(0,len(encoded),2048): print('FRAME',p.stem,encoded[i:i+2048])
+for path in sorted(Path('screenshots').glob('[0-9]*.png')):
+    encoded = base64.b64encode(path.read_bytes()).decode()
+    for start in range(0, len(encoded), 2048):
+        print('FRAME', path.stem, encoded[start:start + 2048])
 PYCODE
+fi

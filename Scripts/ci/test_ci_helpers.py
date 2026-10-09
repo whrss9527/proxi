@@ -290,15 +290,15 @@ app_update_requested "/fake/Old App.app" proxyswitch://update 8766 /ProxySwitch-
             self.assertIn('${{ runner.temp }}/*.log', block)
 
     def test_result_gate_rejects_skipped_cancelled_and_missing(self):
-        names = ['scripts', 'build', 'smoke', 'migration', 'update', 'rename', 'signing', 'extension']
+        names = ['scripts', 'build', 'smoke', 'migration', 'update', 'rename', 'signing', 'extension', 'settings-visual']
         results = {name: {'result': 'success'} for name in names}
         def run(value):
             return subprocess.run(['python3', str(CI / 'check-results.py')], env={**os.environ, 'CI_NEEDS': json.dumps(value)}, capture_output=True)
         self.assertEqual(run(results).returncode, 0)
         for state in ['failure', 'cancelled', 'skipped']:
-            bad = {**results, 'extension': {'result': state}}
+            bad = {**results, 'settings-visual': {'result': state}}
             self.assertNotEqual(run(bad).returncode, 0)
-        del results['extension']
+        del results['settings-visual']
         self.assertNotEqual(run(results).returncode, 0)
 
     def test_fixture_records_served_assets_and_http_errors(self):
