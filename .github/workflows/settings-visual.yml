@@ -22,6 +22,10 @@ jobs:
           (cd dist && shasum -a 256 --ignore-missing -c SHA256SUMS.txt)
           ditto -x -k dist/Proxi-macos-arm64.zip dist
           ditto -x -k dist/Proxi-Engine-0.16.5.zip dist
+      - name: Verify layer-backed cover on screen
+        run: |
+          swiftc -parse-as-library Sources/Proxi/UI/SettingsWindowHandoff.swift Scripts/ci/check-handoff-layer.swift -o "$RUNNER_TEMP/check-handoff-layer"
+          "$RUNNER_TEMP/check-handoff-layer"
       - name: Observe real sidebar handoff
         run: bash Scripts/ci/settings-visual.sh
       - uses: actions/upload-artifact@v4
