@@ -27,26 +27,36 @@ func dumpTree(_ root: AXUIElement, depth: Int = 0) {
     for child in attribute(root, kAXChildrenAttribute) as? [AXUIElement] ?? [] { dumpTree(child, depth: depth + 1) }
 }
 final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
-    let context = CIContext()
     var index = 0
     var rect: CGRect = .zero
+    var captured: [(Data, Int, Int, Int)] = []
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen, let buffer = CMSampleBufferGetImageBuffer(sample) else { return }
+        guard type == .screen, let buffer = CMSampleBufferGetImageBuffer(sample),
+              let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              attachments.first?[.status] as? Int == SCFrameStatus.complete.rawValue else { return }
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         let bytes = CVPixelBufferGetBytesPerRow(buffer)
         let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
         let x = Int(rect.minX + 4), y = Int(rect.minY + 150)
         let p = base + y * bytes + x * 4
         print("PIXEL", index, CMSampleBufferGetPresentationTimeStamp(sample).seconds, p[0], p[1], p[2])
-        CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
-        let frame = CIImage(cvPixelBuffer: buffer)
-        if let cg = context.createCGImage(frame, from: frame.extent) {
-            let bitmap = NSBitmapImageRep(cgImage: cg)
-            if let png = bitmap.representation(using: .png, properties: [:]) {
-                try? png.write(to: output.appendingPathComponent(String(format: "%05d.png", index)))
-            }
-        }
+        let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+        // 回调只拷贝像素。PNG 编码放到停止采样之后，免得漏掉只出现一帧的闪烁。
+        captured.append((Data(bytes: base, count: bytes * height), width, height, bytes))
         index += 1
+    }
+    func save() throws {
+        for (i, item) in captured.enumerated() {
+            let (data, width, height, bytes) = item
+            let provider = CGDataProvider(data: data as CFData)!
+            let cg = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: bytes, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+            let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])!
+            try png.write(to: output.appendingPathComponent(String(format: "%05d.png", i)))
+        }
     }
 }
 @main struct Main {
@@ -62,6 +72,7 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let display = content.displays[0]
         let configuration = SCStreamConfiguration()
+        configuration.colorSpaceName = CGColorSpace.sRGB
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.width = display.width
         configuration.height = display.height
@@ -81,7 +92,7 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
             let app = NSRunningApplication.runningApplications(withBundleIdentifier: appID).first!
             let root = AXUIElementCreateApplication(app.processIdentifier)
             guard let target = button(root, title: title) else { dumpTree(root); fatalError("找不到侧栏按钮：\(title)") }
-            print("CLICK", title, Date().timeIntervalSince1970)
+            print("CLICK", title, CACurrentMediaTime())
             var origin = CGPoint.zero, size = CGSize.zero
             let positionValue = attribute(target, kAXPositionAttribute) as! AXValue
             let sizeValue = attribute(target, kAXSizeAttribute) as! AXValue
@@ -97,6 +108,7 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         try await Task.sleep(for: .seconds(1))
         try await stream.stopCapture()
         queue.sync {}
+        try frames.save()
         print("frames:", frames.index)
     }
 }
