@@ -108,7 +108,16 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         let queue = DispatchQueue(label: "screen-frames")
         try stream.addStreamOutput(frames, type: .screen, sampleHandlerQueue: queue)
         try await stream.startCapture()
-        for (appID, title) in [("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "General"), ("com.whrss9527.proxyswitch", "Nodes & Subscriptions"), ("com.whrss9527.proxyswitch.engine", "General")] {
+        for (step, pair) in [("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "General"), ("com.whrss9527.proxyswitch", "Nodes & Subscriptions"), ("com.whrss9527.proxyswitch.engine", "General"), ("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "General")].enumerated() {
+            let (appID, title) = pair
+            if step == 2 || step == 4 {
+                print("APPEARANCE", step, CACurrentMediaTime())
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                task.arguments = ["-e", "tell application \"System Events\" to tell appearance preferences to set dark mode to \(step == 4 ? "true" : "false")"]
+                try task.run()
+                try await Task.sleep(for: .seconds(2))
+            }
             try await Task.sleep(for: .seconds(1))
             let app = NSRunningApplication.runningApplications(withBundleIdentifier: appID).first!
             let root = AXUIElementCreateApplication(app.processIdentifier)
