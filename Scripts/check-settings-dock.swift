@@ -2,7 +2,6 @@ import AppKit
 
 // 两个程序已由冒烟测试启动。反复打开两边的页面，持续采样应用身份；
 // 不只检查切换结束后的状态，避免漏掉中途临时进入 Dock 的情况。
-// 透明的准备窗口不算可见，防止两边都未显示时仍然误判为交接成功。
 let identifiers = ["com.whrss9527.proxyswitch", "com.whrss9527.proxyswitch.engine"]
 let engineURL = URL(fileURLWithPath: CommandLine.arguments[1])
 var samples = 0
@@ -14,7 +13,6 @@ func visibleSettingsWindows() -> [[String: Any]] {
     return windows.filter { window in
         guard let pid = window[kCGWindowOwnerPID as String] as? Int32, pids.contains(pid),
               (window[kCGWindowLayer as String] as? Int) == 0,
-              (window[kCGWindowAlpha as String] as? Double ?? 1) > 0.01,
               let bounds = window[kCGWindowBounds as String] as? [String: Any],
               let width = bounds["Width"] as? Double,
               let height = bounds["Height"] as? Double else { return false }
@@ -31,7 +29,7 @@ func checkPolicies() {
         }
     }
     guard !visibleSettingsWindows().isEmpty else {
-        fatalError("设置交接期间两个窗口都不可见，露出了桌面；采样 \(samples)，前台 \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil")")
+        fatalError("设置交接期间两个窗口都不可见，露出了桌面")
     }
     samples += 1
 }
@@ -51,7 +49,6 @@ func checkForeground(_ identifier: String) {
     let hasSettingsWindow = windows.contains { window in
         guard (window[kCGWindowOwnerPID as String] as? Int32) == app.processIdentifier,
               (window[kCGWindowLayer as String] as? Int) == 0,
-              (window[kCGWindowAlpha as String] as? Double ?? 1) > 0.01,
               let bounds = window[kCGWindowBounds as String] as? [String: Any],
               let width = bounds["Width"] as? Double,
               let height = bounds["Height"] as? Double else { return false }

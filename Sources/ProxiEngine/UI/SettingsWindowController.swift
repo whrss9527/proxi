@@ -123,7 +123,6 @@ enum SidebarItem: Hashable {
 
 @MainActor
 final class SettingsNavigation: ObservableObject {
-    @Published var presentationRevision: UInt = 0
     // 跨窗口请求发出后保持用户点击的选中项，避免 List 先弹回原页再切到对方。
     @Published private(set) var requestedSidebarItem: SidebarItem?
     var sidebarItem: SidebarItem { requestedSidebarItem ?? .engine(page) }
@@ -154,11 +153,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     let navigation = SettingsNavigation()
     private var window: NSWindow?
-    private var handoff: SettingsWindowHandoff?
-    private var presentationRequest: UInt?
-    private var readyPageRevision: UInt?
-    private var incomingLayout: SettingsWindowLayout?
-    private(set) var outgoingLayout: SettingsWindowLayout?
     private var otherShownObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
 
@@ -173,25 +167,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             guard let self, let window = self.window, window.isVisible else { return }
             // 对方已经取得焦点并完成绘制，直接隐藏旧窗口，避免关闭动画露出桌面。
             window.orderOut(nil)
-            self.cancelHandoff()
         }
     }
 
-    func show(page: SettingsPage?, layout: SettingsWindowLayout? = nil) {
-        readyPageRevision = nil
-        navigation.presentationRevision &+= 1
+    func show(page: SettingsPage?) {
         navigation.didShow()
         if let page {
             navigation.page = page
         }
         if window == nil {
-            let created = makeWindow()
-            window = created
-            handoff = SettingsWindowHandoff(window: created) { [weak self] in
-                // 目标未能接手时，侧栏也恢复到仍然显示的本地页面。
-                self?.presentationRequest = nil
-                self?.navigation.didShow()
-            }
+            window = makeWindow()
         }
         // 从 Proxi 的设置窗口切过来时放在同一个位置、同样大小。
         if let window, !window.isVisible, let frame = SettingsWindowSync.savedFrame() {
@@ -199,24 +184,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         // 设置窗口也保持后台应用身份；切页不再向 Dock 添加、移除应用图标。
         // 先提交隐藏期间累积的页面布局，再把窗口交给 WindowServer。
-        if let window, !window.isVisible {
-            incomingLayout = layout ?? SettingsWindowSync.savedSidebarLayout()
-        }
         window?.contentView?.layoutSubtreeIfNeeded()
-        if let window { incomingLayout?.apply(to: window) }
         window?.displayIfNeeded()
-        presentationRequest = handoff?.beginShowing()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         if let window {
             SettingsWindowSync.save(window.frame)
         }
-        announceWhenReady()
-    }
-
-    private func pageDidLayout(_ revision: UInt) {
-        guard revision == navigation.presentationRevision else { return }
-        readyPageRevision = revision
         announceWhenReady()
     }
 
@@ -226,41 +200,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     /// 激活是异步的；仅在窗口真正成为前台窗口且首帧画好后，才让另一边隐藏。
     private func announceWhenReady() {
-        guard let request = presentationRequest else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.presentationRequest == request else { return }
-            // 隐藏窗口重新进入 SwiftUI 布局后再应用一次，避免旧分栏宽度覆盖交接值。
-            if let window = self.window { self.incomingLayout?.apply(to: window) }
-            if self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive,
-                                           pageIsReady: self.readyPageRevision == self.navigation.presentationRevision) == true {
-                self.presentationRequest = nil
-                self.incomingLayout = nil
-                SettingsWindowSync.announceShown()
-            } else if self.readyPageRevision == self.navigation.presentationRevision,
-                      let window = self.window, window.isVisible, window.isKeyWindow, NSApp.isActive {
-                // 等显示服务器确认显现；不是用固定延时猜测目标窗口已经画好。
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 120) { [weak self] in
-                    guard self?.presentationRequest == request else { return }
-                    self?.announceWhenReady()
-                }
-            }
+            guard let window = self?.window, window.isVisible, window.isKeyWindow, NSApp.isActive else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            SettingsWindowSync.announceShown()
         }
-    }
-
-    func prepareToHandOff() {
-        if let window, window.isVisible {
-            outgoingLayout = SettingsWindowLayout.capture(from: window)
-            SettingsWindowSync.saveSidebarLayout(outgoingLayout)
-        }
-        presentationRequest = nil
-        handoff?.freeze()
-    }
-
-    func cancelHandoff() {
-        incomingLayout = nil
-        outgoingLayout = nil
-        presentationRequest = nil
-        handoff?.cancel()
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -278,14 +223,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        cancelHandoff()
         NSApp.setActivationPolicy(.accessory)
     }
 
     private func makeWindow() -> NSWindow {
-        let root = SettingsRootView(onPageReady: { [weak self] revision in
-            self?.pageDidLayout(revision)
-        }, state: AppState.shared, navigation: navigation)
+        let root = SettingsRootView(state: AppState.shared, navigation: navigation)
         let hosting = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: hosting)
         // 和 Proxi 的设置窗口同一个标题：两边当成同一个窗口。
@@ -306,7 +248,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
 /// 设置窗口的内容：左侧导航，右侧各页；跨窗口切换时底色保持稳定。
 struct SettingsRootView: View {
-    let onPageReady: (UInt) -> Void
     @ObservedObject var state: AppState
     @ObservedObject var navigation: SettingsNavigation
 
@@ -338,8 +279,6 @@ struct SettingsRootView: View {
                 Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(SettingsPageReady(revision: navigation.presentationRevision, onReady: onPageReady))
-                    .accessibilityIdentifier("settings-page-" + navigation.page.rawValue)
             }
         }
         .frame(minWidth: 760, minHeight: 520)
@@ -365,7 +304,6 @@ struct SettingsRootView: View {
     private var sidebarSelection: Binding<SidebarItem?> {
         Binding(get: { navigation.sidebarItem }, set: { item in
             guard let item else { return }
-            SettingsWindowController.shared.cancelHandoff()
             navigation.select(item)
             switch item {
             case .engine: break

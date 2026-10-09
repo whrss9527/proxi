@@ -169,6 +169,16 @@ final class TerminalCommandsTests: XCTestCase {
 }
 
 final class ParsingTests: XCTestCase {
+    func testLsof() {
+        let output = "p512\ncCharles\nf23\nn*:8888\nf24\nn127.0.0.1:8889\np9000\ncnode\nf18\nn[::1]:3000\n"
+        let listeners = LocalProxyDetector.parseLsof(output)
+        XCTAssertEqual(listeners, [
+            LocalProxyDetector.Listener(port: 8888, process: "Charles"),
+            LocalProxyDetector.Listener(port: 8889, process: "Charles"),
+            LocalProxyDetector.Listener(port: 3000, process: "node"),
+        ])
+    }
+
     func testURLCommands() {
         XCTAssertEqual(URLCommand.parse(URL(string: "proxi://toggle")!), .toggle)
         XCTAssertEqual(URLCommand.parse(URL(string: "proxi://on")!), .turnOn)

@@ -7,8 +7,6 @@ import SwiftUI
 final class StatusItemController: NSObject {
     private let state: AppState
     private let statusItem: NSStatusItem
-    private var imageCache = StatusImageCache<NSImage>()
-    private var appearanceObserver: NSKeyValueObservation?
     private var panel: PanelWindow?
     private var hostingView: NSHostingView<PanelView>?
     private var keyObserver: Any?
@@ -23,9 +21,6 @@ final class StatusItemController: NSObject {
             button.action = #selector(statusItemClicked(_:))
             _ = button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.imagePosition = .imageOnly
-            appearanceObserver = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
-                Task { @MainActor in self?.updateSpeedLabel() }
-            }
         }
         // 更新条出现、进度变化时面板高度会变，跟着调整窗口。
         state.updater.$phase
@@ -48,23 +43,17 @@ final class StatusItemController: NSObject {
     private func updateSpeedLabel() {
         guard let button = statusItem.button else { return }
         let meter = state.speed
-        let iconState = self.iconState
-        let layout = SpeedLayout.resolve(side: state.config.speedSide, state: iconState)
-        var textColor = labelColor(for: button)
-        if state.config.speedColorFollowsStatus, let accent = StatusIcon.speedTextColor(for: iconState, darkMenuBar: isDark(button)) {
-            textColor = accent.cgColor
-        }
-        let key = StatusImageKey(state: iconState,
-                                 upload: meter.mode == .none ? nil : SpeedFormatter.compact(bytesPerSecond: meter.upload),
-                                 download: meter.mode == .none ? nil : SpeedFormatter.compact(bytesPerSecond: meter.download),
-                                 layout: layout, textColor: textColor, appearance: button.effectiveAppearance.name.rawValue)
-        let image = imageCache.image(for: key) {
-            if let upload = key.upload, let download = key.download {
-                return StatusIcon.image(for: iconState, upload: upload, download: download, textColor: textColor, layout: layout)
+        if meter.mode == .none {
+            button.image = StatusIcon.image(for: iconState)
+        } else {
+            let iconState = self.iconState
+            let layout = SpeedLayout.resolve(side: state.config.speedSide, state: iconState)
+            var textColor = labelColor(for: button)
+            if state.config.speedColorFollowsStatus, let accent = StatusIcon.speedTextColor(for: iconState, darkMenuBar: isDark(button)) {
+                textColor = accent.cgColor
             }
-            return StatusIcon.image(for: iconState)
+            button.image = StatusIcon.image(for: iconState, upload: SpeedFormatter.compact(bytesPerSecond: meter.upload), download: SpeedFormatter.compact(bytesPerSecond: meter.download), textColor: textColor, layout: layout)
         }
-        if button.image !== image { button.image = image }
         button.imagePosition = .imageOnly
         // 提示里的网速跟着图标一起更新。
         button.toolTip = tooltip + (meter.mode == .none ? "" : "\n↑ \(SpeedFormatter.full(bytesPerSecond: meter.upload))  ↓ \(SpeedFormatter.full(bytesPerSecond: meter.download))")

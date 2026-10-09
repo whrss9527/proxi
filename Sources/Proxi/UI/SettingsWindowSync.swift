@@ -28,20 +28,9 @@ enum SettingsWindowSync {
         defaults?.set(NSStringFromRect(frame), forKey: frameKey)
     }
 
-    static func saveSidebarLayout(_ layout: SettingsWindowLayout?) {
-        guard let layout, let data = try? JSONEncoder().encode(layout) else { return }
-        defaults?.set(data, forKey: "settingsSidebarLayout")
-    }
-
-    static func savedSidebarLayout() -> SettingsWindowLayout? {
-        guard let data = defaults?.data(forKey: "settingsSidebarLayout") else { return nil }
-        return try? JSONDecoder().decode(SettingsWindowLayout.self, from: data)
-    }
-
     /// 要切到另一边（让它打开设置窗口）之前调用。macOS 14 起程序不能自己抢到前台，要由在前台的程序先让出来，
     /// 另一边的窗口出来时才会到前台。
     static func yieldToOther() {
-        SettingsWindowController.shared.prepareToHandOff()
         NSApp.yieldActivation(toApplicationWithBundleIdentifier: other)
     }
 
@@ -64,26 +53,26 @@ enum SettingsWindowSync {
     nonisolated private static let proxiPageRequest = Notification.Name("com.whrss9527.proxyswitch.proxiSettingsPage")
 
     static func requestProxiPage(_ page: String) {
-        DistributedNotificationCenter.default().postNotificationName(proxiPageRequest, object: page, userInfo: SettingsWindowController.shared.outgoingLayout?.notificationInfo, deliverImmediately: true)
+        DistributedNotificationCenter.default().postNotificationName(proxiPageRequest, object: page, userInfo: nil, deliverImmediately: true)
     }
 
-    static func observeProxiPageRequests(_ handler: @escaping @MainActor (String, SettingsWindowLayout?) -> Void) -> NSObjectProtocol {
+    static func observeProxiPageRequests(_ handler: @escaping @MainActor (String) -> Void) -> NSObjectProtocol {
         DistributedNotificationCenter.default().addObserver(forName: proxiPageRequest, object: nil, queue: .main) { note in
             guard let page = note.object as? String else { return }
-            MainActor.assumeIsolated { handler(page, SettingsWindowLayout.decode(note.userInfo)) }
+            MainActor.assumeIsolated { handler(page) }
         }
     }
 
     /// Proxi 这边：请代理引擎打开设置窗口的某一页（代理引擎那边 SettingsPage 的 rawValue）。
     static func requestEnginePage(_ page: String) {
-        DistributedNotificationCenter.default().postNotificationName(pageRequest, object: page, userInfo: SettingsWindowController.shared.outgoingLayout?.notificationInfo, deliverImmediately: true)
+        DistributedNotificationCenter.default().postNotificationName(pageRequest, object: page, userInfo: nil, deliverImmediately: true)
     }
 
     /// 代理引擎这边：收到打开某一页的请求时调用 handler。
-    static func observeEnginePageRequests(_ handler: @escaping @MainActor (String, SettingsWindowLayout?) -> Void) -> NSObjectProtocol {
+    static func observeEnginePageRequests(_ handler: @escaping @MainActor (String) -> Void) -> NSObjectProtocol {
         DistributedNotificationCenter.default().addObserver(forName: pageRequest, object: nil, queue: .main) { note in
             guard let page = note.object as? String else { return }
-            MainActor.assumeIsolated { handler(page, SettingsWindowLayout.decode(note.userInfo)) }
+            MainActor.assumeIsolated { handler(page) }
         }
     }
 

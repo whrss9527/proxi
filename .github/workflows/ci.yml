@@ -277,43 +277,10 @@ jobs:
             ${{ runner.temp }}/fixture-requests*.jsonl
           retention-days: 7
 
-  settings-visual:
-    name: 设置切页（${{ matrix.os }} / ${{ matrix.appearance }}）
-    needs: build
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, macos-26]
-        appearance: [light, dark]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: proxi-ci-dist
-          path: ${{ runner.temp }}
-      - name: 还原产物
-        run: bash Scripts/ci/unpack.sh
-      - name: 选择 Xcode
-        run: bash Scripts/ci/select-xcode.sh
-      - name: 实际点击侧栏并检查屏幕画面
-        env:
-          PROXI_TEST_APPEARANCE: ${{ matrix.appearance }}
-        run: bash Scripts/ci/settings-visual.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: proxi-ci-settings-${{ matrix.os }}-${{ matrix.appearance }}
-          path: |
-            screenshots/
-            ${{ runner.temp }}/settings-visual.log
-          retention-days: 7
-
   macos:
     # 保留原有检查名字，分支保护和自动合并继续等全部检查成功。
     name: 编译、测试、打包
-    needs: [scripts, build, smoke, migration, update, rename, signing, extension, settings-visual]
+    needs: [scripts, build, smoke, migration, update, rename, signing, extension]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
