@@ -67,6 +67,11 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         while NSRunningApplication.runningApplications(withBundleIdentifier: "com.whrss9527.proxyswitch.engine").isEmpty && Date() < deadline {
             try await Task.sleep(for: .milliseconds(100))
         }
+        let backdrop = CIImage(color: CIColor(red: 0.15, green: 0.65, blue: 0.9)).cropped(to: CGRect(x: 0, y: 0, width: 1024, height: 768))
+        let cg = CIContext().createCGImage(backdrop, from: backdrop.extent)!
+        let backdropURL = output.appendingPathComponent("wallpaper.png")
+        try NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])!.write(to: backdropURL)
+        try NSWorkspace.shared.setDesktopImageURL(backdropURL, for: NSScreen.main!, options: [:])
         NSWorkspace.shared.open(URL(string: "proxi://settings?page=general")!)
         try await Task.sleep(for: .seconds(2))
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
