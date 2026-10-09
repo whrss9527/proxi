@@ -5,7 +5,7 @@ import os
 import sys
 
 results = json.loads(os.environ["CI_NEEDS"])
-required = {"scripts", "build", "smoke", "migration", "update", "rename", "signing", "extension"}
+required = {"scripts", "build", "smoke", "migration", "update", "rename", "signing", "extension", "settings-visual"}
 failures = {name: results.get(name, {}).get("result", "missing") for name in required if results.get(name, {}).get("result") != "success"}
 if failures:
     print(f"::error::检查未全部成功：{failures}")

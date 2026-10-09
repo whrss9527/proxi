@@ -41,9 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             CommandLineInstaller.repairIfPossible()
         }
         MainMenu.install()
-        settingsPageObserver = SettingsWindowSync.observeProxiPageRequests { page in
+        settingsPageObserver = SettingsWindowSync.observeProxiPageRequests { page, layout in
             guard let page = SettingsPage(rawValue: page) else { return }
-            SettingsWindowController.shared.show(page: page)
+            SettingsWindowController.shared.show(page: page, layout: layout)
         }
         let state = AppState.shared
         Notifier.shared.start()

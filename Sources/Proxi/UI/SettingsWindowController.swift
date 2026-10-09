@@ -42,6 +42,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
 @MainActor
 final class SettingsNavigation: ObservableObject {
+    @Published var presentationRevision: UInt = 0
     // 跨窗口请求发出后保持用户点击的选中项，避免 List 先弹回原页再切到对方。
     @Published private(set) var requestedSidebarItem: SidebarItem?
     var sidebarItem: SidebarItem { requestedSidebarItem ?? .proxi(page) }
@@ -139,6 +140,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var handoff: SettingsWindowHandoff?
     private var presentationRequest: UInt?
+    private var readyPageRevision: UInt?
+    private var incomingLayout: SettingsWindowLayout?
+    private(set) var outgoingLayout: SettingsWindowLayout?
     private var otherShownObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
 
@@ -160,7 +164,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func show(page: SettingsPage?) {
+    func show(page: SettingsPage?, layout: SettingsWindowLayout? = nil) {
+        readyPageRevision = nil
+        navigation.presentationRevision &+= 1
         navigation.didShow()
         if let page {
             navigation.page = page
@@ -180,7 +186,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         // 设置窗口也保持菜单栏应用身份；切页不再向 Dock 添加、移除应用图标。
         // 先提交隐藏期间累积的页面布局，再把窗口交给 WindowServer。
+        if let window, !window.isVisible {
+            incomingLayout = layout ?? SettingsWindowSync.savedSidebarLayout()
+        }
         window?.contentView?.layoutSubtreeIfNeeded()
+        if let window { incomingLayout?.apply(to: window) }
         window?.displayIfNeeded()
         presentationRequest = handoff?.beginShowing()
         window?.makeKeyAndOrderFront(nil)
@@ -188,6 +198,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         if let window {
             SettingsWindowSync.save(window.frame)
         }
+        announceWhenReady()
+    }
+
+    private func pageDidLayout(_ revision: UInt) {
+        guard revision == navigation.presentationRevision else { return }
+        readyPageRevision = revision
         announceWhenReady()
     }
 
@@ -200,10 +216,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard let request = presentationRequest else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.presentationRequest == request else { return }
-            if self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive) == true {
+            // 隐藏窗口重新进入 SwiftUI 布局后再应用一次，避免旧分栏宽度覆盖交接值。
+            if let window = self.window { self.incomingLayout?.apply(to: window) }
+            if self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive,
+                                           pageIsReady: self.readyPageRevision == self.navigation.presentationRevision) == true {
                 self.presentationRequest = nil
+                self.incomingLayout = nil
                 SettingsWindowSync.announceShown()
-            } else if let window = self.window, window.isVisible, window.isKeyWindow, NSApp.isActive {
+            } else if self.readyPageRevision == self.navigation.presentationRevision,
+                      let window = self.window, window.isVisible, window.isKeyWindow, NSApp.isActive {
                 // 等显示服务器确认显现；不是用固定延时猜测目标窗口已经画好。
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 120) { [weak self] in
                     guard self?.presentationRequest == request else { return }
@@ -214,11 +235,17 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func prepareToHandOff() {
+        if let window, window.isVisible {
+            outgoingLayout = SettingsWindowLayout.capture(from: window)
+            SettingsWindowSync.saveSidebarLayout(outgoingLayout)
+        }
         presentationRequest = nil
         handoff?.freeze()
     }
 
     func cancelHandoff() {
+        incomingLayout = nil
+        outgoingLayout = nil
         presentationRequest = nil
         handoff?.cancel()
     }
@@ -247,7 +274,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        let root = SettingsRootView(state: AppState.shared, navigation: navigation)
+        let root = SettingsRootView(onPageReady: { [weak self] revision in
+            self?.pageDidLayout(revision)
+        }, state: AppState.shared, navigation: navigation)
         let hosting = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: hosting)
         window.title = L("Proxi 设置")
@@ -267,6 +296,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
 /// 设置窗口的内容：左侧导航，右侧各页；跨窗口切换时底色保持稳定。
 struct SettingsRootView: View {
+    let onPageReady: (UInt) -> Void
     @ObservedObject var state: AppState
     @ObservedObject var navigation: SettingsNavigation
 
@@ -297,6 +327,8 @@ struct SettingsRootView: View {
                 Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(SettingsPageReady(revision: navigation.presentationRevision, onReady: onPageReady))
+                    .accessibilityIdentifier("settings-page-" + navigation.page.rawValue)
             }
         }
         .frame(minWidth: 760, minHeight: 520)
