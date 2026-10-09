@@ -29,6 +29,7 @@ func dumpTree(_ root: AXUIElement, depth: Int = 0) {
 final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
     var index = 0
     var rect: CGRect = .zero
+    var scale: CGFloat = 1
     var captured: [(Data, Int, Int, Int)] = []
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, let buffer = CMSampleBufferGetImageBuffer(sample),
@@ -38,7 +39,7 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         let bytes = CVPixelBufferGetBytesPerRow(buffer)
         let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
-        let x = Int(rect.minX + 4), y = Int(rect.minY + 150)
+        let x = Int((rect.minX + 4) * scale), y = Int((rect.minY + 150) * scale)
         let p = base + y * bytes + x * 4
         print("PIXEL", index, CMSampleBufferGetPresentationTimeStamp(sample).seconds, p[0], p[1], p[2])
         let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
@@ -63,6 +64,13 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
     @MainActor static func main() async throws {
         print("OS:", ProcessInfo.processInfo.operatingSystemVersionString, "AX:", AXIsProcessTrusted())
         guard AXIsProcessTrusted() else { fatalError("CI 未授予无障碍权限，不能把未点击侧栏算作通过") }
+        let modes = CGDisplayCopyAllDisplayModes(CGMainDisplayID(), [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary) as? [CGDisplayMode] ?? []
+        print("DISPLAY_MODES", modes.map { "\($0.width)x\($0.height):\($0.pixelWidth)x\($0.pixelHeight)" })
+        if let retina = modes.first(where: { $0.width >= 1024 && $0.width <= 1280 && $0.pixelWidth >= $0.width * 2 }) {
+            print("RETINA", CGDisplaySetDisplayMode(CGMainDisplayID(), retina, nil).rawValue)
+            try await Task.sleep(for: .seconds(1))
+        }
+        print("BACKING_SCALE", NSScreen.main!.backingScaleFactor)
         let deadline = Date().addingTimeInterval(30)
         while NSRunningApplication.runningApplications(withBundleIdentifier: "com.whrss9527.proxyswitch.engine").isEmpty && Date() < deadline {
             try await Task.sleep(for: .milliseconds(100))
@@ -86,8 +94,8 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         let configuration = SCStreamConfiguration()
         configuration.colorSpaceName = CGColorSpace.sRGB
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        configuration.width = display.width
-        configuration.height = display.height
+        configuration.width = display.width * Int(NSScreen.main!.backingScaleFactor)
+        configuration.height = display.height * Int(NSScreen.main!.backingScaleFactor)
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         configuration.showsCursor = false
         configuration.queueDepth = 8
@@ -95,6 +103,7 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         let frames = Frames()
         let window = content.windows.first { $0.owningApplication?.bundleIdentifier == "com.whrss9527.proxyswitch" && $0.frame.width >= 760 }!
         frames.rect = window.frame
+        frames.scale = NSScreen.main!.backingScaleFactor
         print("WINDOW", window.frame)
         let queue = DispatchQueue(label: "screen-frames")
         try stream.addStreamOutput(frames, type: .screen, sampleHandlerQueue: queue)
