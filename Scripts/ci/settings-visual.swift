@@ -29,8 +29,16 @@ func dumpTree(_ root: AXUIElement, depth: Int = 0) {
 final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
     let context = CIContext()
     var index = 0
+    var rect: CGRect = .zero
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, let buffer = CMSampleBufferGetImageBuffer(sample) else { return }
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        let bytes = CVPixelBufferGetBytesPerRow(buffer)
+        let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+        let x = Int(rect.minX + 4), y = Int(rect.minY + 150)
+        let p = base + y * bytes + x * 4
+        print("PIXEL", index, CMSampleBufferGetPresentationTimeStamp(sample).seconds, p[0], p[1], p[2])
+        CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
         let frame = CIImage(cvPixelBuffer: buffer)
         if let cg = context.createCGImage(frame, from: frame.extent) {
             let bitmap = NSBitmapImageRep(cgImage: cg)
@@ -54,6 +62,7 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let display = content.displays[0]
         let configuration = SCStreamConfiguration()
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.width = display.width
         configuration.height = display.height
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
@@ -61,6 +70,9 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         configuration.queueDepth = 8
         let stream = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: configuration, delegate: nil)
         let frames = Frames()
+        let window = content.windows.first { $0.owningApplication?.bundleIdentifier == "com.whrss9527.proxyswitch" && $0.frame.width >= 760 }!
+        frames.rect = window.frame
+        print("WINDOW", window.frame)
         let queue = DispatchQueue(label: "screen-frames")
         try stream.addStreamOutput(frames, type: .screen, sampleHandlerQueue: queue)
         try await stream.startCapture()

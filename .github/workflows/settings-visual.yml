@@ -13,6 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash Scripts/ci/select-xcode.sh
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: settings-visual-26-${{ github.sha }}
+          restore-keys: settings-visual-26-
       - name: Build apps
         run: VERSION=0.0.0 ARCHS= CONFIG=debug bash Scripts/build-app.sh
       - name: Observe real sidebar handoff
@@ -24,32 +29,3 @@ jobs:
           path: |
             screenshots/
             ${{ runner.temp }}/settings-visual.log
-
-  baseline-frames:
-    if: ${{ startsWith(github.event.head_commit.message, 'diagnostic:') }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download captured baseline
-        uses: actions/download-artifact@v4
-        with:
-          name: settings-visual
-          run-id: 37873067481
-          github-token: ${{ github.token }}
-          path: baseline
-      - run: python3 -m pip install Pillow
-      - name: Export diagnostic frames
-        run: |
-          python3 - <<'PYCODE'
-          import base64,io
-          from pathlib import Path
-          from PIL import Image
-          files=sorted(Path('baseline').rglob('*'))
-          print('CWD',Path.cwd(),'FILES',[(str(p),p.stat().st_size) for p in files if p.is_file()])
-          for p in files:
-              if not p.is_file() or p.suffix.lower() not in ('.png','.jpg'): continue
-              image=Image.open(p).convert('RGB')
-              data=io.BytesIO()
-              image.save(data,format='JPEG',quality=88)
-              encoded=base64.b64encode(data.getvalue()).decode()
-              for i in range(0,len(encoded),2048): print('FRAME',p.stem,encoded[i:i+2048])
-          PYCODE
