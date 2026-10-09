@@ -52,10 +52,10 @@ final class SettingsWindowHandoff {
     }
 
     /// 过期或重复的回调不能把新一轮交接中的窗口显现出来，也不能通知对方隐藏。
-    func finishShowing(_ request: UInt, applicationIsActive: Bool,
+    func finishShowing(_ request: UInt, applicationIsActive: Bool, pageIsReady: Bool,
                        visibleOnScreen: ((NSWindow) -> Bool)? = nil) -> Bool {
         guard pendingPresentation == request, let window,
-              window.isVisible, window.isKeyWindow, applicationIsActive else { return false }
+              window.isVisible, window.isKeyWindow, applicationIsActive, pageIsReady else { return false }
         window.contentView?.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         CATransaction.flush()

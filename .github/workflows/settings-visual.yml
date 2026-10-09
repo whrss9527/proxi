@@ -21,7 +21,7 @@ jobs:
       - name: Build candidate apps
         run: VERSION=0.0.0 ARCHS= CONFIG=debug bash Scripts/build-app.sh
       - name: Test window layout
-        run: swift test --filter SettingsWindowLayoutTests
+        run: swift test --filter 'Settings(Window|Page)'
       - name: Verify layer-backed cover on screen
         run: |
           swiftc -parse-as-library Sources/Proxi/UI/SettingsWindowHandoff.swift Scripts/ci/check-handoff-layer.swift -o "$RUNNER_TEMP/check-handoff-layer"

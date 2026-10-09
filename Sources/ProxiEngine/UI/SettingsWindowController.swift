@@ -123,6 +123,7 @@ enum SidebarItem: Hashable {
 
 @MainActor
 final class SettingsNavigation: ObservableObject {
+    @Published var presentationRevision: UInt = 0
     // 跨窗口请求发出后保持用户点击的选中项，避免 List 先弹回原页再切到对方。
     @Published private(set) var requestedSidebarItem: SidebarItem?
     var sidebarItem: SidebarItem { requestedSidebarItem ?? .engine(page) }
@@ -155,6 +156,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var handoff: SettingsWindowHandoff?
     private var presentationRequest: UInt?
+    private var readyPageRevision: UInt?
     private var incomingLayout: SettingsWindowLayout?
     private(set) var outgoingLayout: SettingsWindowLayout?
     private var otherShownObserver: NSObjectProtocol?
@@ -176,6 +178,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func show(page: SettingsPage?, layout: SettingsWindowLayout? = nil) {
+        readyPageRevision = nil
+        navigation.presentationRevision &+= 1
         navigation.didShow()
         if let page {
             navigation.page = page
@@ -210,6 +214,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         announceWhenReady()
     }
 
+    private func pageDidLayout(_ revision: UInt) {
+        guard revision == navigation.presentationRevision else { return }
+        readyPageRevision = revision
+        announceWhenReady()
+    }
+
     func windowDidBecomeKey(_ notification: Notification) {
         announceWhenReady()
     }
@@ -221,11 +231,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             guard let self, self.presentationRequest == request else { return }
             // 隐藏窗口重新进入 SwiftUI 布局后再应用一次，避免旧分栏宽度覆盖交接值。
             if let window = self.window { self.incomingLayout?.apply(to: window) }
-            if self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive) == true {
+            if self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive,
+                                           pageIsReady: self.readyPageRevision == self.navigation.presentationRevision) == true {
                 self.presentationRequest = nil
                 self.incomingLayout = nil
                 SettingsWindowSync.announceShown()
-            } else if let window = self.window, window.isVisible, window.isKeyWindow, NSApp.isActive {
+            } else if self.readyPageRevision == self.navigation.presentationRevision,
+                      let window = self.window, window.isVisible, window.isKeyWindow, NSApp.isActive {
                 // 等显示服务器确认显现；不是用固定延时猜测目标窗口已经画好。
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 120) { [weak self] in
                     guard self?.presentationRequest == request else { return }
@@ -271,7 +283,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        let root = SettingsRootView(state: AppState.shared, navigation: navigation)
+        let root = SettingsRootView(onPageReady: { [weak self] revision in
+            self?.pageDidLayout(revision)
+        }, state: AppState.shared, navigation: navigation)
         let hosting = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: hosting)
         // 和 Proxi 的设置窗口同一个标题：两边当成同一个窗口。
@@ -292,6 +306,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
 /// 设置窗口的内容：左侧导航，右侧各页；跨窗口切换时底色保持稳定。
 struct SettingsRootView: View {
+    let onPageReady: (UInt) -> Void
     @ObservedObject var state: AppState
     @ObservedObject var navigation: SettingsNavigation
 
@@ -323,6 +338,8 @@ struct SettingsRootView: View {
                 Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(SettingsPageReady(revision: navigation.presentationRevision, onReady: onPageReady))
+                    .accessibilityIdentifier("settings-page-" + navigation.page.rawValue)
             }
         }
         .frame(minWidth: 760, minHeight: 520)
