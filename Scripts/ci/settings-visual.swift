@@ -108,9 +108,9 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
         let queue = DispatchQueue(label: "screen-frames")
         try stream.addStreamOutput(frames, type: .screen, sampleHandlerQueue: queue)
         try await stream.startCapture()
-        for (step, pair) in [("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "General"), ("com.whrss9527.proxyswitch", "Nodes & Subscriptions"), ("com.whrss9527.proxyswitch.engine", "General"), ("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "General")].enumerated() {
+        for (step, pair) in [("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "Extensions"), ("com.whrss9527.proxyswitch", "Nodes & Subscriptions"), ("com.whrss9527.proxyswitch.engine", "Diagnose"), ("com.whrss9527.proxyswitch", "Advanced"), ("com.whrss9527.proxyswitch.engine", "General")].enumerated() {
             let (appID, title) = pair
-            if step == 2 || step == 4 {
+            if step == -1 {
                 print("APPEARANCE", step, CACurrentMediaTime())
                 let task = Process()
                 task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
