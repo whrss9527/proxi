@@ -82,7 +82,17 @@ final class Frames: NSObject, SCStreamOutput, @unchecked Sendable {
             let root = AXUIElementCreateApplication(app.processIdentifier)
             guard let target = button(root, title: title) else { dumpTree(root); fatalError("找不到侧栏按钮：\(title)") }
             print("CLICK", title, Date().timeIntervalSince1970)
-            guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else { fatalError("侧栏点击失败") }
+            var origin = CGPoint.zero, size = CGSize.zero
+            let positionValue = attribute(target, kAXPositionAttribute) as! AXValue
+            let sizeValue = attribute(target, kAXSizeAttribute) as! AXValue
+            AXValueGetValue(positionValue, .cgPoint, &origin)
+            AXValueGetValue(sizeValue, .cgSize, &size)
+            let point = CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+            CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+            try await Task.sleep(for: .milliseconds(80))
+            CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)!.post(tap: .cghidEventTap)
+            try await Task.sleep(for: .seconds(1))
         }
         try await Task.sleep(for: .seconds(1))
         try await stream.stopCapture()
