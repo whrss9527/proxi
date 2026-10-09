@@ -48,8 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // CI 按这一行确认界面语言（sample 是菜单里「设置…」的译文）。
         Log.info("界面语言 english=\(AppLanguage.isEnglish) sample=\"\(L("设置…"))\"")
         // Proxi 的侧边栏里点了这边的某一页：运行中时经分布式通知打开那一页，刚启动时经启动参数。
-        pageRequestObserver = SettingsWindowSync.observeEnginePageRequests { page, layout in
-            SettingsWindowController.shared.show(page: SettingsPage(rawValue: page), layout: layout)
+        pageRequestObserver = SettingsWindowSync.observeEnginePageRequests { page in
+            SettingsWindowController.shared.show(page: SettingsPage(rawValue: page))
         }
         if CommandLine.arguments.contains(Self.showSettingsArgument) {
             SettingsWindowController.shared.show(page: Self.requestedPage(CommandLine.arguments))
