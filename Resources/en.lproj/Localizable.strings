@@ -611,3 +611,9 @@
 "iCloud 配置格式 %@ 比这台 Mac 支持的版本更新，请更新 Proxi。" = "iCloud configuration format %@ is newer than this Mac supports. Update Proxi.";
 "这台 Mac 不支持此配置的生效范围，请更新 Proxi。" = "This Mac does not support the targets of this profile. Update Proxi.";
 "这台 Mac 不支持" = "Unsupported on this Mac";
+"无法读取" = "Unable to read";
+"无法读取开启前的代理设置，保留当前设置以便重试" = "Unable to read the previous proxy settings. Current settings have been kept so you can retry.";
+"launchctl getenv %@ 失败：%@" = "launchctl getenv %@ failed: %@";
+"开启前" = "Before enabling";
+"git 开启前" = "Git before enabling";
+"npm 开启前" = "npm before enabling";

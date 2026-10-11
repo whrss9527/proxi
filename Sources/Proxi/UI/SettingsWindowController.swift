@@ -546,6 +546,9 @@ struct DiagnosticsPage: View {
             Form {
                 Section(L("系统代理")) {
                     LabeledContent(L("当前生效"), value: state.snapshot.summary)
+                    if let original = state.persisted.original {
+                        LabeledContent(L("开启前"), value: original.summary)
+                    }
                     LabeledContent(L("自动发现（WPAD）"), value: state.snapshot.autoDiscovery ? L("开") : L("关"))
                     LabeledContent(L("例外"), value: state.snapshot.exceptions.isEmpty ? L("无") : state.snapshot.exceptions.joined(separator: ", "))
                     LabeledContent(L("网络服务"), value: services.isEmpty ? L("无") : services.map { $0.enabled ? $0.name : L("%@（已停用）", $0.name) }.joined(separator: L("、")))
@@ -560,6 +563,9 @@ struct DiagnosticsPage: View {
                     }
                 }
                 Section(L("环境变量（launchd）")) {
+                    if let original = state.persisted.originalScopes.environment {
+                        LabeledContent(L("开启前"), value: original.summary)
+                    }
                     ForEach(EnvironmentProxy.names, id: \.self) { name in
                         LabeledContent(name, value: environment[name]?.isEmpty == false ? environment[name]! : L("未设置"))
                     }
@@ -568,6 +574,12 @@ struct DiagnosticsPage: View {
                         .foregroundStyle(.secondary)
                 }
                 Section(L("git 与 npm")) {
+                    if let original = state.persisted.originalScopes.git {
+                        LabeledContent(L("git 开启前"), value: original.summary)
+                    }
+                    if let original = state.persisted.originalScopes.npm {
+                        LabeledContent(L("npm 开启前"), value: original.summary)
+                    }
                     LabeledContent("git http.proxy", value: gitProxy.isEmpty ? L("未设置") : gitProxy)
                     LabeledContent("npm proxy", value: npm["proxy"] ?? L("未设置"))
                     LabeledContent("npm https-proxy", value: npm["https-proxy"] ?? L("未设置"))

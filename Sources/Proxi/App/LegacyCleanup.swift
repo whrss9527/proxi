@@ -25,7 +25,7 @@ enum LegacyCleanup {
 
     /// 现在的 config.json 和 state.json 里有的顶层键；别的键都是以前版本才有的设置。
     static let knownConfigKeys = Set(AppConfig.CodingKeys.allCases.map(\.rawValue))
-    static let knownStateKeys: Set<String> = ["lastProfileID", "enabledByUs", "original", "systemServices", "syncEnabled", "noticeShown", "extension", "pendingCleanup"]
+    static let knownStateKeys: Set<String> = ["lastProfileID", "enabledByUs", "original", "originalScopes", "appliedTargets", "systemServices", "syncEnabled", "noticeShown", "extension", "pendingCleanup"]
     /// 数据目录里以前版本用的子目录和文件：挪到代理引擎的数据目录。
     static let legacyDataItems = ["core", "imports", "journal.json"]
 

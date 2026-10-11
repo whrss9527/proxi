@@ -51,6 +51,10 @@ final class ExitCleanupTests: XCTestCase {
         func clearGit() async throws { try await recordAsync("clearGit", .git) }
         func setNpm(proxyURL: String, noProxy: String) throws { try record("setNpm", .npm) }
         func clearNpm() throws { try record("clearNpm", .npm) }
+        func captureProxySettings(for target: ProxyTarget) async throws -> ProxyScopeSnapshot.Values { [:] }
+        func restoreProxySettings(_ values: ProxyScopeSnapshot.Values, for target: ProxyTarget) async throws {
+            try await recordAsync("restore-" + target.rawValue, target)
+        }
     }
 
     private let host = "proxy.corp.example"
