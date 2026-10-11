@@ -1,0 +1,270 @@
+import XCTest
+import SystemConfiguration
+@testable import Proxi
+
+final class SystemServiceProxyTests: XCTestCase {
+    final class Backend: ProxyBackend, @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [String: SystemServiceSettings]
+        var active: [String]
+        var failWrite = Set<String>()
+        var failRestore = Set<String>()
+        var delay = false
+        private(set) var written: [String] = []
+        private(set) var restored: [String] = []
+
+        init(_ services: [SystemServiceSettings], active: [String]? = nil) {
+            items = Dictionary(uniqueKeysWithValues: services.map { ($0.id, $0) })
+            self.active = active ?? services.map(\.id)
+        }
+        var supportsServiceSnapshots: Bool { true }
+        func value(_ id: String) -> SystemServiceSettings? { lock.lock(); defer { lock.unlock() }; return items[id] }
+        func add(_ item: SystemServiceSettings) { lock.lock(); defer { lock.unlock() }; items[item.id] = item; active.append(item.id) }
+        private func replace(_ item: SystemServiceSettings) { lock.lock(); defer { lock.unlock() }; items[item.id] = item }
+        private func record(_ id: String) { lock.lock(); defer { lock.unlock() }; written.append(id) }
+        private func recordRestore(_ id: String) { lock.lock(); defer { lock.unlock() }; restored.append(id) }
+        func readSystemServices(also ids: [String]) -> SystemServiceRead {
+            lock.lock(); defer { lock.unlock() }
+            return SystemServiceRead(settings: items.values.filter { active.contains($0.id) || ids.contains($0.id) || ids.contains($0.name) }.sorted { $0.id < $1.id })
+        }
+        func applySystemServices(_ desired: DesiredProxy, services: [SystemServiceSettings]) async -> SystemServiceResult {
+            await applySystemPlans(services.map { .init(id: $0.id, name: $0.name, desired: desired) })
+        }
+        func applySystemPlans(_ plans: [SystemServiceProxy.Plan]) async -> SystemServiceResult {
+            if delay { try? await Task.sleep(for: .milliseconds(80)) }
+            var result = SystemServiceResult()
+            for plan in plans {
+                record(plan.id)
+                var snapshot = ProxySnapshot()
+                if let endpoint = plan.desired.http { snapshot.httpEnabled = true; snapshot.httpHost = endpoint.host; snapshot.httpPort = endpoint.port }
+                if let endpoint = plan.desired.https { snapshot.httpsEnabled = true; snapshot.httpsHost = endpoint.host; snapshot.httpsPort = endpoint.port }
+                snapshot.autoDiscovery = plan.desired.autoDiscovery
+                snapshot.exceptions = plan.desired.bypassDomains
+                replace(try! SystemServiceSettings(id: plan.id, name: plan.name, dictionary: snapshot.legacyDictionary))
+                if failWrite.contains(plan.id) { result.failures[plan.name] = "write failed" }
+                else { result.succeeded.append(plan.id) }
+            }
+            return result
+        }
+        func restoreSystemServices(_ settings: [SystemServiceSettings]) async -> SystemServiceResult {
+            var result = SystemServiceResult()
+            for item in settings {
+                if failRestore.contains(item.id) { result.failures[item.name] = "restore failed" }
+                else { replace(item); recordRestore(item.id); result.succeeded.append(item.id) }
+            }
+            return result
+        }
+        func currentSystemProxy() -> ProxySnapshot { value(active.first ?? "")?.snapshot ?? ProxySnapshot() }
+        func applySystemProxy(_ desired: DesiredProxy, also services: [String]) async throws -> [String] { XCTFail("使用了旧的全局恢复"); return [] }
+        func setEnvironment(proxyURL: String, noProxy: String) async throws {}
+        func clearEnvironment() async throws {}
+        func setGit(proxyURL: String) async throws {}
+        func clearGit() async throws {}
+        func setNpm(proxyURL: String, noProxy: String) throws {}
+        func clearNpm() throws {}
+        func captureProxySettings(for target: ProxyTarget) async throws -> ProxyScopeSnapshot.Values { [:] }
+        func restoreProxySettings(_ values: ProxyScopeSnapshot.Values, for target: ProxyTarget) async throws {}
+    }
+
+    private func service(_ id: String, host: String = "", enabled: Bool = false, discovery: Bool = false) throws -> SystemServiceSettings {
+        var snapshot = ProxySnapshot()
+        snapshot.httpEnabled = enabled
+        snapshot.httpHost = host
+        snapshot.httpPort = 8080
+        snapshot.autoDiscovery = discovery
+        var dictionary = snapshot.legacyDictionary
+        dictionary["PreservedData"] = Data([0, 1, 2])
+        return try SystemServiceSettings(id: id, name: id == "wifi" ? "Wi-Fi" : "Ethernet", dictionary: dictionary)
+    }
+
+    /// 内存中的测试记录避免触碰运行测试机器的钥匙串。
+    private func backup(_ item: SystemServiceSettings) -> SystemServiceBackup {
+        SystemServiceBackup(id: item.id, name: item.name,
+            original: ProxyScopeSnapshot(values: ["configuration": item.configuration.map { [$0.base64EncodedString()] } ?? []]),
+            autoDiscovery: item.snapshot.autoDiscovery)
+    }
+
+    @MainActor
+    private func state(_ backend: Backend, persisted: PersistedState = PersistedState(), mode: OffMode = .restore) -> AppState {
+        var profile = Profile(name: "开发代理", color: "#2563eb", host: "debug.corp.example", port: 8888)
+        profile.targets = [.system]
+        var config = AppConfig()
+        config.profiles = [profile]
+        config.offMode = mode
+        config.notifyLevel = .none
+        config.healthCheck = false
+        return AppState(config: config, persisted: persisted, backend: backend, persists: false, backupSystemService: backup)
+    }
+
+    @MainActor
+    private func wait(_ state: AppState) async throws {
+        for _ in 0..<300 { if !state.busy { return }; try await Task.sleep(for: .milliseconds(10)) }
+        XCTFail("代理操作没有完成")
+    }
+
+    @MainActor
+    func testRestoreKeepsEachServiceOriginalAndDisabledFields() async throws {
+        let wifi = try service("wifi", host: "disabled.corp.example")
+        let ethernet = try service("ethernet", host: "corp.example", enabled: true, discovery: true)
+        let backend = Backend([wifi, ethernet])
+        let state = state(backend)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false)
+        try await wait(state)
+        XCTAssertEqual(state.persisted.originalSystemServices?.count, 2)
+        XCTAssertNil(state.persisted.original)
+        state.turnOff(); try await wait(state)
+        XCTAssertEqual(backend.value("wifi"), wifi)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertNil(state.persisted.originalSystemServices)
+    }
+
+    @MainActor
+    func testPartialWriteStillRestoresFailedServiceAndContinuesOthers() async throws {
+        let wifi = try service("wifi")
+        let ethernet = try service("ethernet", host: "corp.example", enabled: true)
+        let backend = Backend([wifi, ethernet]); backend.failWrite = ["ethernet"]
+        let state = state(backend)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false); try await wait(state)
+        XCTAssertTrue(state.appliedTargets.contains(.system))
+        XCTAssertTrue(state.lastError?.contains("Ethernet") == true)
+        XCTAssertTrue(backend.value("ethernet")!.snapshot.httpActive)
+        state.turnOff(); try await wait(state)
+        XCTAssertEqual(backend.value("wifi"), wifi)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+    }
+
+    @MainActor
+    func testFailedRestoreRetainsOnlyUnfinishedServiceForRetry() async throws {
+        let wifi = try service("wifi")
+        let ethernet = try service("ethernet", host: "corp.example", enabled: true)
+        let backend = Backend([wifi, ethernet]); let state = state(backend)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false); try await wait(state)
+        backend.failRestore = ["ethernet"]
+        state.turnOff(); try await wait(state)
+        XCTAssertEqual(Set(state.persisted.originalSystemServices?.keys.map { $0 } ?? []), ["ethernet"])
+        XCTAssertEqual(backend.value("wifi"), wifi)
+        backend.failRestore = []
+        state.turnOff(); try await wait(state)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertNil(state.persisted.originalSystemServices)
+    }
+
+    @MainActor
+    func testNewServiceCapturedBeforeApplyAndExistingServiceNotRecaptured() async throws {
+        let wifi = try service("wifi"); let backend = Backend([wifi]); let state = state(backend)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false); try await wait(state)
+        let original = state.persisted.originalSystemServices?["wifi"]
+        let ethernet = try service("ethernet", host: "corp.example", enabled: true)
+        backend.add(ethernet); state.networkServicesChanged(); try await wait(state)
+        XCTAssertEqual(state.persisted.originalSystemServices?["wifi"], original)
+        XCTAssertEqual(backend.written.filter { $0 == "wifi" }.count, 1)
+        XCTAssertEqual(backend.value("ethernet")?.snapshot.httpHost, "debug.corp.example")
+        state.turnOff(); try await wait(state)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+    }
+
+    @MainActor
+    func testNetworkChangeDuringEnableIsDeferred() async throws {
+        let backend = Backend([try service("wifi")]); backend.delay = true
+        let state = state(backend)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false)
+        try await Task.sleep(for: .milliseconds(30))
+        backend.add(try service("ethernet")); state.networkServicesChanged()
+        try await wait(state)
+        XCTAssertEqual(state.persisted.originalSystemServices?.count, 2)
+        XCTAssertEqual(backend.value("ethernet")?.snapshot.httpHost, "debug.corp.example")
+    }
+
+    @MainActor
+    func testDirectRestoresAutoDiscoverySeparately() async throws {
+        let backend = Backend([try service("wifi"), try service("ethernet", discovery: true)])
+        let state = state(backend, mode: .direct)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false); try await wait(state)
+        state.turnOff(); try await wait(state)
+        XCTAssertFalse(backend.value("wifi")!.snapshot.autoDiscovery)
+        XCTAssertTrue(backend.value("ethernet")!.snapshot.autoDiscovery)
+        XCTAssertFalse(backend.value("ethernet")!.snapshot.isActive)
+    }
+
+    @MainActor
+    func testLegacySessionUsesSavedGlobalOriginalInsteadOfCurrentOwnedValue() async throws {
+        let original = try service("wifi", host: "corp.example", enabled: true)
+        var persisted = PersistedState(); persisted.enabledByUs = true; persisted.appliedTargets = [.system]
+        persisted.original = original.snapshot; persisted.systemServices = ["Wi-Fi"]
+        let backend = Backend([try service("wifi", host: "debug.corp.example", enabled: true)])
+        let state = state(backend, persisted: persisted)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false); try await wait(state)
+        state.turnOff(); try await wait(state)
+        XCTAssertEqual(backend.value("wifi")!.snapshot, original.snapshot)
+    }
+
+    @MainActor
+    func testUnreadableSystemBackupsNeverOverwriteCurrentSettings() async throws {
+        let wifi = try service("wifi", host: "corp.example", enabled: true)
+        let backend = Backend([wifi]); var persisted = PersistedState(); persisted.systemServiceBackupsUnreadable = true
+        let state = state(backend, persisted: persisted)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false); try await wait(state)
+        XCTAssertEqual(backend.value("wifi"), wifi)
+        XCTAssertTrue(backend.written.isEmpty)
+    }
+
+    func testCompleteDictionaryProtectedAndRenamedServiceKeepsIdentity() throws {
+        let service = try service("wifi", host: "disabled.corp.example")
+        var stored: [UUID: String] = [:]
+        var record = try service.backup { stored[$1] = $0 }
+        record.name = "Renamed Wi-Fi"
+        let data = try JSONEncoder().encode(record)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("disabled.corp.example"))
+        let restored = try record.resolved { stored[$0] }
+        XCTAssertEqual(restored.id, service.id)
+        XCTAssertEqual(restored.configuration, service.configuration)
+        XCTAssertEqual(restored.name, "Renamed Wi-Fi")
+        XCTAssertThrowsError(try record.resolved { _ in nil })
+    }
+
+    func testNoProtocolConfigurationRoundTripsAndCorruptRecordIsBlocked() throws {
+        let empty = try SystemServiceSettings(id: "empty", name: "Empty", dictionary: nil)
+        XCTAssertNil(try backup(empty).resolved().configuration)
+        var record = backup(empty); record.original.values = ["configuration": ["broken"]]
+        XCTAssertThrowsError(try record.resolved())
+        let state = try JSONDecoder().decode(PersistedState.self, from: Data("{\"originalSystemServices\":{\"wifi\":false}}".utf8))
+        XCTAssertTrue(state.systemServiceBackupsUnreadable)
+    }
+
+    func testCommandFailureDoesNotStopNextService() async throws {
+        let desired = DesiredProxy(profile: Profile(name: "代理", color: "#2563eb", host: "corp.example", port: 8888))
+        let result = await SystemServiceProxy.apply([.init(id: "wifi", name: "Wi-Fi", desired: desired), .init(id: "ethernet", name: "Ethernet", desired: desired)], run: { _, arguments in
+            ShellResult(output: arguments[1] == "Wi-Fi" ? "Error: failed" : "", status: arguments[1] == "Wi-Fi" ? 1 : 0)
+        }, authorize: { _ in XCTFail("普通错误不应触发提权"); return ShellResult(output: "", status: 1) })
+        XCTAssertEqual(result.succeeded, ["ethernet"])
+        XCTAssertNotNil(result.failures["Wi-Fi"])
+    }
+
+    func testAuthorizationIsCombinedAndServiceErrorsAreIsolated() async throws {
+        let desired = DesiredProxy(profile: Profile(name: "代理", color: "#2563eb", host: "corp.example", port: 8888))
+        let plans = [SystemServiceProxy.Plan(id: "wifi", name: "Wi-Fi", desired: desired), .init(id: "ethernet", name: "Ethernet", desired: desired)]
+        var authorizationCount = 0
+        let result = await SystemServiceProxy.apply(plans, run: { _, _ in ShellResult(output: "requires administrator", status: 1) }, authorize: { script in
+            authorizationCount += 1
+            XCTAssertTrue(script.contains("service_0")); XCTAssertTrue(script.contains("service_1"))
+            return ShellResult(output: "0\tERR\t" + Data("Error: unavailable".utf8).base64EncodedString() + "\n1\tOK\n", status: 0)
+        })
+        XCTAssertEqual(authorizationCount, 1)
+        XCTAssertEqual(result.succeeded, ["ethernet"])
+        XCTAssertEqual(result.failures["Wi-Fi"], "Error: unavailable")
+    }
+
+    func testExitRestoresReadableServiceEvenWhenAnotherSecretIsUnavailable() throws {
+        let wifi = try service("wifi"); let ethernet = try service("ethernet")
+        let backend = Backend([wifi, ethernet])
+        let records = ["wifi": backup(wifi), "ethernet": backup(ethernet)]
+        let failures = ExitCleanup.run([.system], systemProxy: DesiredProxy(offWithAutoDiscovery: false, bypassDomains: []), services: [], backend: backend, timeout: 2,
+            mode: .restore, systemBackups: records, resolveSystemOriginal: { record in
+                if record.id == "ethernet" { throw RestorationError.unavailable }
+                return try record.resolved()
+            })
+        XCTAssertNotNil(failures[.system])
+        XCTAssertEqual(backend.restored, ["wifi"])
+        XCTAssertEqual(backend.value("wifi"), wifi)
+    }
+}

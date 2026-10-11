@@ -2,6 +2,11 @@ import Foundation
 
 /// 改系统代理、终端环境变量、git 和 npm 的地方。AppState 经它去改，单元测试换成假的，不碰这台 Mac 的设置。
 protocol ProxyBackend: Sendable {
+    var supportsServiceSnapshots: Bool { get }
+    func readSystemServices(also ids: [String]) -> SystemServiceRead
+    func applySystemServices(_ desired: DesiredProxy, services: [SystemServiceSettings]) async -> SystemServiceResult
+    func applySystemPlans(_ plans: [SystemServiceProxy.Plan]) async -> SystemServiceResult
+    func restoreSystemServices(_ settings: [SystemServiceSettings]) async -> SystemServiceResult
     func currentSystemProxy() -> ProxySnapshot
     /// 写入系统代理，返回写了哪些网络服务（见 SystemProxy.apply）。
     func applySystemProxy(_ desired: DesiredProxy, also services: [String]) async throws -> [String]
@@ -15,8 +20,23 @@ protocol ProxyBackend: Sendable {
     func restoreProxySettings(_ values: ProxyScopeSnapshot.Values, for target: ProxyTarget) async throws
 }
 
+extension ProxyBackend {
+    var supportsServiceSnapshots: Bool { false }
+    func readSystemServices(also ids: [String]) -> SystemServiceRead { SystemServiceRead() }
+    func applySystemServices(_ desired: DesiredProxy, services: [SystemServiceSettings]) async -> SystemServiceResult { SystemServiceResult() }
+    func applySystemPlans(_ plans: [SystemServiceProxy.Plan]) async -> SystemServiceResult { SystemServiceResult() }
+    func restoreSystemServices(_ settings: [SystemServiceSettings]) async -> SystemServiceResult { SystemServiceResult() }
+}
+
 /// 真正去改这台 Mac 的设置。
 struct SystemBackend: ProxyBackend {
+    var supportsServiceSnapshots: Bool { true }
+    func readSystemServices(also ids: [String]) -> SystemServiceRead { SystemServiceProxy.read(also: ids) }
+    func applySystemServices(_ desired: DesiredProxy, services: [SystemServiceSettings]) async -> SystemServiceResult {
+        await applySystemPlans(services.map { .init(id: $0.id, name: $0.name, desired: desired) })
+    }
+    func applySystemPlans(_ plans: [SystemServiceProxy.Plan]) async -> SystemServiceResult { await SystemServiceProxy.apply(plans) }
+    func restoreSystemServices(_ settings: [SystemServiceSettings]) async -> SystemServiceResult { await SystemServiceProxy.restore(settings) }
     func captureProxySettings(for target: ProxyTarget) async throws -> ProxyScopeSnapshot.Values {
         switch target {
         case .environment: return try await EnvironmentProxy.snapshot()
@@ -73,6 +93,8 @@ enum ExitCleanup {
     /// 返回没清理成功的项和原因；到时间还没做完的也算没成功（下次启动时接着清理）。
     static func run(_ targets: [ProxyTarget], systemProxy desired: DesiredProxy, services: [String], backend: ProxyBackend, timeout: TimeInterval,
                     originals: OriginalProxySettings = OriginalProxySettings(), mode: OffMode = .direct,
+                    systemBackups: [String: SystemServiceBackup]? = nil, systemBackupsUnreadable: Bool = false,
+                    resolveSystemOriginal: (SystemServiceBackup) throws -> SystemServiceSettings = { try $0.resolved { ProxyKeychain.password(for: $0, allowUI: false) } },
                     resolveOriginal: (ProxyScopeSnapshot) throws -> ProxyScopeSnapshot.Values = { try $0.resolved { ProxyKeychain.password(for: $0, allowUI: false) } }) -> [ProxyTarget: String] {
         let outcomes = Outcomes()
         let semaphore = DispatchSemaphore(value: 0)
@@ -85,6 +107,16 @@ enum ExitCleanup {
             catch { outcomes.record(target, problem: Redact.secrets(error.localizedDescription)) }
         }
         let restoreValues = loaded
+        var loadedServices: [SystemServiceSettings] = []
+        var serviceErrors: [String: String] = [:]
+        if mode == .restore {
+            for record in (systemBackups ?? [:]).values {
+                do { loadedServices.append(try resolveSystemOriginal(record)) }
+                catch { serviceErrors[record.name] = Redact.secrets(error.localizedDescription) }
+            }
+        }
+        let systemValues = loadedServices
+        let systemErrors = serviceErrors
         let unresolved = Set(outcomes.snapshot().keys)
         Task.detached {
             await withTaskGroup(of: Void.self) { group in
@@ -96,7 +128,17 @@ enum ExitCleanup {
                                 try await backend.restoreProxySettings(values, for: target)
                             } else {
                                 switch target {
-                                case .system: _ = try await backend.applySystemProxy(desired, also: services)
+                                case .system:
+                                    if systemBackupsUnreadable { throw RestorationError.unavailable }
+                                    if let systemBackups {
+                                        let result: SystemServiceResult
+                                        if mode == .restore {
+                                            var restored = await backend.restoreSystemServices(systemValues)
+                                            restored.failures.merge(systemErrors) { _, new in new }
+                                            result = restored
+                                        } else { result = await SystemServiceCleanup.direct(systemBackups, backend: backend) }
+                                        if let error = result.error { throw SystemProxyError.command(error) }
+                                    } else { _ = try await backend.applySystemProxy(desired, also: services) }
                                 case .environment: try await backend.clearEnvironment()
                                 case .git: try await backend.clearGit()
                                 case .npm: try backend.clearNpm()

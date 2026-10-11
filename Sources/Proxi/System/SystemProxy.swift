@@ -91,6 +91,7 @@ enum NetworkServices {
         var name: String
         var bsdName: String?
         var enabled: Bool
+        var id: String = ""
     }
 
     /// 当前网络位置里的服务，按系统的服务顺序。
@@ -109,7 +110,7 @@ enum NetworkServices {
             if let interface = SCNetworkServiceGetInterface(service) {
                 bsdName = SCNetworkInterfaceGetBSDName(interface) as String?
             }
-            let item = Service(name: name, bsdName: bsdName, enabled: SCNetworkServiceGetEnabled(service))
+            let item = Service(name: name, bsdName: bsdName, enabled: SCNetworkServiceGetEnabled(service), id: (SCNetworkServiceGetServiceID(service) as String?) ?? "")
             if let id = SCNetworkServiceGetServiceID(service) as String? {
                 byID[id] = item
             } else {
@@ -127,9 +128,10 @@ enum NetworkServices {
         return result
     }
 
-    /// 接口是否有 IPv4 地址（正在使用）。
+    /// 接口是否有 IPv4 或 IPv6 地址（正在使用）。
     static func isActive(bsdName: String) -> Bool {
-        SCDynamicStoreCopyValue(nil, "State:/Network/Interface/\(bsdName)/IPv4" as CFString) != nil
+        SCDynamicStoreCopyValue(nil, "State:/Network/Interface/\(bsdName)/IPv4" as CFString) != nil ||
+        SCDynamicStoreCopyValue(nil, "State:/Network/Interface/\(bsdName)/IPv6" as CFString) != nil
     }
 
     /// 要写入代理设置的服务名：接口有地址的服务；一个都没有时（离线）写全部启用的服务，这样联网后设置也是生效的。
@@ -138,12 +140,16 @@ enum NetworkServices {
     }
 
     static func select(services: [Service], isActive: (String) -> Bool) -> [String] {
+        selectServices(services: services, isActive: isActive).map(\.name)
+    }
+
+    static func selectServices(services: [Service], isActive: (String) -> Bool) -> [Service] {
         let enabled = services.filter { $0.enabled && !$0.name.isEmpty }
         let active = enabled.filter { service in
             guard let bsdName = service.bsdName, !bsdName.isEmpty else { return false }
             return isActive(bsdName)
         }
-        return (active.isEmpty ? enabled : active).map(\.name)
+        return active.isEmpty ? enabled : active
     }
 }
 
@@ -152,26 +158,31 @@ final class SystemWatcher {
     private var store: SCDynamicStore?
     private var source: CFRunLoopSource?
     private let onChange: @MainActor () -> Void
+    private let onNetworkChange: (@MainActor () -> Void)?
 
-    init(onChange: @escaping @MainActor () -> Void) {
+    init(onNetworkChange: (@MainActor () -> Void)? = nil, onChange: @escaping @MainActor () -> Void) {
         self.onChange = onChange
+        self.onNetworkChange = onNetworkChange
     }
 
     func start() {
         var context = SCDynamicStoreContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
-        let callback: SCDynamicStoreCallBack = { _, _, info in
+        let callback: SCDynamicStoreCallBack = { _, keys, info in
             guard let info else { return }
             let watcher = Unmanaged<SystemWatcher>.fromOpaque(info).takeUnretainedValue()
+            let networkChanged = (keys as? [String] ?? []).contains { $0.hasSuffix("/IPv4") || $0.hasSuffix("/IPv6") || $0.hasPrefix("Setup:/Network/") }
             Task { @MainActor in
                 watcher.onChange()
+                if networkChanged { watcher.onNetworkChange?() }
             }
         }
         guard let store = SCDynamicStoreCreate(nil, "Proxi" as CFString, callback, &context) else {
             Log.error("无法创建 SCDynamicStore，改为定时轮询")
             return
         }
-        let keys = ["State:/Network/Global/Proxies", "State:/Network/Global/IPv4", "State:/Network/Global/DNS"] as CFArray
-        SCDynamicStoreSetNotificationKeys(store, keys, nil)
+        let keys = ["State:/Network/Global/Proxies", "State:/Network/Global/IPv4", "State:/Network/Global/IPv6", "State:/Network/Global/DNS"] as CFArray
+        let patterns = ["State:/Network/Interface/.*/IPv[46]", "Setup:/Network/Service/[^/]+$"] as CFArray
+        SCDynamicStoreSetNotificationKeys(store, keys, patterns)
         guard let source = SCDynamicStoreCreateRunLoopSource(nil, store, 0) else { return }
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         self.store = store

@@ -549,6 +549,9 @@ struct DiagnosticsPage: View {
                     if let original = state.persisted.original {
                         LabeledContent(L("开启前"), value: original.summary)
                     }
+                    ForEach((state.persisted.originalSystemServices ?? [:]).values.sorted { $0.name < $1.name }, id: \.id) { original in
+                        LabeledContent(L("%@ 开启前", original.name), value: original.original.summary)
+                    }
                     LabeledContent(L("自动发现（WPAD）"), value: state.snapshot.autoDiscovery ? L("开") : L("关"))
                     LabeledContent(L("例外"), value: state.snapshot.exceptions.isEmpty ? L("无") : state.snapshot.exceptions.joined(separator: ", "))
                     LabeledContent(L("网络服务"), value: services.isEmpty ? L("无") : services.map { $0.enabled ? $0.name : L("%@（已停用）", $0.name) }.joined(separator: L("、")))
