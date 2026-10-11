@@ -128,6 +128,15 @@ final class OriginalProxySettingsTests: XCTestCase {
         XCTAssertEqual(state.appliedTargets, [])
         XCTAssertNil(state.persisted.originalScopes.git)
         XCTAssertNotNil(state.lastError)
+
+        var persisted = PersistedState()
+        persisted.originalScopes.git = ProxyScopeSnapshot(values: [:], unreadable: true)
+        let broken = self.state(backend, targets: [.git], persisted: persisted)
+        broken.turnOn(try XCTUnwrap(broken.selectedProfile), askForPassword: false)
+        try await wait(broken)
+        XCTAssertEqual(backend.values(.git), originals[.git])
+        XCTAssertEqual(broken.appliedTargets, [])
+        XCTAssertNotNil(broken.lastError)
     }
 
     @MainActor

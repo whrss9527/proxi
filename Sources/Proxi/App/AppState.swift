@@ -671,6 +671,7 @@ final class AppState: ObservableObject {
                 let before = persisted
                 let original: ProxyScopeSnapshot
                 if let saved = persisted.originalScopes[target] {
+                    _ = try saved.resolved()
                     original = saved
                 } else {
                     original = try ProxyScopeSnapshot.capture(await backend.captureProxySettings(for: target))
