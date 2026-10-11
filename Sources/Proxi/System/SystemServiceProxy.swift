@@ -174,8 +174,8 @@ enum SystemServiceProxy {
 }
 
 enum SystemServiceCleanup {
-    static func direct(_ records: [String: SystemServiceBackup], backend: ProxyBackend) async -> SystemServiceResult {
-        let read = backend.readSystemServices(also: Array(records.keys))
+    static func direct(_ records: [String: SystemServiceBackup], also services: [String] = [], backend: ProxyBackend) async -> SystemServiceResult {
+        let read = backend.readSystemServices(also: Array(records.keys) + services)
         let plans = read.settings.map { item in
             SystemServiceProxy.Plan(id: item.id, name: item.name,
                 desired: DesiredProxy(offWithAutoDiscovery: records[item.id]?.autoDiscovery ?? item.snapshot.autoDiscovery,

@@ -763,6 +763,7 @@ final class AppState: ObservableObject {
                 if let id = record.original.secretID { restorationSecretsToDelete.insert(id) }
             }
             persisted.originalSystemServices = nil
+            persisted.systemServiceBackupsUnreadable = false
         }
         if let id = persisted.originalScopes[target]?.secretID { restorationSecretsToDelete.insert(id) }
         persisted.originalScopes[target] = nil
@@ -832,7 +833,7 @@ final class AppState: ObservableObject {
     }
 
     private func clearSystemServices(mode: OffMode) async -> String? {
-        guard !persisted.systemServiceBackupsUnreadable else {
+        guard mode == .direct || !persisted.systemServiceBackupsUnreadable else {
             let message = RestorationError.unavailable.localizedDescription
             targetFailures[.system] = message
             return message
@@ -848,7 +849,7 @@ final class AppState: ObservableObject {
             }
             result = await backend.restoreSystemServices(settings)
             result.failures.merge(failures) { _, new in new }
-        } else { result = await SystemServiceCleanup.direct(records, backend: backend) }
+        } else { result = await SystemServiceCleanup.direct(records, also: persisted.systemServices, backend: backend) }
         for id in result.succeeded {
             if let secret = persisted.originalSystemServices?[id]?.original.secretID { restorationSecretsToDelete.insert(secret) }
             persisted.originalSystemServices?[id] = nil

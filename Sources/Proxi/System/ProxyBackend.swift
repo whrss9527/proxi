@@ -129,14 +129,14 @@ enum ExitCleanup {
                             } else {
                                 switch target {
                                 case .system:
-                                    if systemBackupsUnreadable { throw RestorationError.unavailable }
+                                    if systemBackupsUnreadable && mode == .restore { throw RestorationError.unavailable }
                                     if let systemBackups {
                                         let result: SystemServiceResult
                                         if mode == .restore {
                                             var restored = await backend.restoreSystemServices(systemValues)
                                             restored.failures.merge(systemErrors) { _, new in new }
                                             result = restored
-                                        } else { result = await SystemServiceCleanup.direct(systemBackups, backend: backend) }
+                                        } else { result = await SystemServiceCleanup.direct(systemBackups, also: services, backend: backend) }
                                         if let error = result.error { throw SystemProxyError.command(error) }
                                     } else { _ = try await backend.applySystemProxy(desired, also: services) }
                                 case .environment: try await backend.clearEnvironment()

@@ -210,6 +210,18 @@ final class SystemServiceProxyTests: XCTestCase {
     }
 
     @MainActor
+    func testExplicitDirectCleanupCanClearCorruptBackupAndEnableAgain() async throws {
+        let backend = Backend([try service("wifi", host: "corp.example", enabled: true)])
+        var persisted = PersistedState(); persisted.systemServiceBackupsUnreadable = true
+        let state = state(backend, persisted: persisted)
+        await state.clearAllProxySettings()
+        XCTAssertFalse(backend.value("wifi")!.snapshot.isActive)
+        XCTAssertFalse(state.persisted.systemServiceBackupsUnreadable)
+        state.turnOn(try XCTUnwrap(state.selectedProfile), askForPassword: false); try await wait(state)
+        XCTAssertEqual(backend.value("wifi")!.snapshot.httpHost, "debug.corp.example")
+    }
+
+    @MainActor
     func testLegacyNetworkEventIncludesPreviouslyOwnedInactiveService() async throws {
         let old = try service("wifi", host: "corp.example", enabled: true)
         let owned = try service("wifi", host: "debug.corp.example", enabled: true)
