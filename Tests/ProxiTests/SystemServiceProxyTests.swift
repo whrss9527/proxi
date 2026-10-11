@@ -80,7 +80,7 @@ final class SystemServiceProxyTests: XCTestCase {
     /// 内存中的测试记录避免触碰运行测试机器的钥匙串。
     private func backup(_ item: SystemServiceSettings) -> SystemServiceBackup {
         SystemServiceBackup(id: item.id, name: item.name,
-            original: ProxyScopeSnapshot(values: ["configuration": item.configuration.map { [$0.base64EncodedString()] } ?? []]),
+            original: ProxyScopeSnapshot(values: ["configuration": item.configuration.map { [$0.base64EncodedString()] } ?? [], "enabled": [item.protocolEnabled ? "1" : "0"]]),
             autoDiscovery: item.snapshot.autoDiscovery)
     }
 
@@ -241,7 +241,8 @@ final class SystemServiceProxyTests: XCTestCase {
     }
 
     func testCompleteDictionaryProtectedAndRenamedServiceKeepsIdentity() throws {
-        let service = try service("wifi", host: "disabled.corp.example")
+        var service = try service("wifi", host: "disabled.corp.example")
+        service.protocolEnabled = false
         var stored: [UUID: String] = [:]
         var record = try service.backup { stored[$1] = $0 }
         record.name = "Renamed Wi-Fi"
@@ -250,6 +251,7 @@ final class SystemServiceProxyTests: XCTestCase {
         let restored = try record.resolved { stored[$0] }
         XCTAssertEqual(restored.id, service.id)
         XCTAssertEqual(restored.configuration, service.configuration)
+        XCTAssertFalse(restored.protocolEnabled)
         XCTAssertEqual(restored.name, "Renamed Wi-Fi")
         XCTAssertThrowsError(try record.resolved { _ in nil })
     }

@@ -6,16 +6,19 @@ struct SystemServiceSettings: Equatable, Sendable {
     var id: String
     var name: String
     var configuration: Data?
+    var protocolEnabled: Bool
 
-    init(id: String, name: String, configuration: Data?) {
+    init(id: String, name: String, configuration: Data?, protocolEnabled: Bool = true) {
         self.id = id
         self.name = name
         self.configuration = configuration
+        self.protocolEnabled = protocolEnabled
     }
 
-    init(id: String, name: String, dictionary: [String: Any]?) throws {
+    init(id: String, name: String, dictionary: [String: Any]?, protocolEnabled: Bool = true) throws {
         self.id = id
         self.name = name
+        self.protocolEnabled = protocolEnabled
         configuration = try dictionary.map { try PropertyListSerialization.data(fromPropertyList: $0, format: .binary, options: 0) }
     }
 
@@ -27,7 +30,7 @@ struct SystemServiceSettings: Equatable, Sendable {
     var snapshot: ProxySnapshot { ProxySnapshot(dictionary: dictionary ?? [:]) }
 
     func backup(storeSecret: (String, UUID) throws -> Void = { try ProxyKeychain.set($0, for: $1) }) throws -> SystemServiceBackup {
-        let values = ["configuration": configuration.map { [$0.base64EncodedString()] } ?? []]
+        let values = ["configuration": configuration.map { [$0.base64EncodedString()] } ?? [], "enabled": [protocolEnabled ? "1" : "0"]]
         let original = try ProxyScopeSnapshot.protected(values, display: ["proxy": [Redact.secrets(snapshot.summary)]], storeSecret: storeSecret)
         return SystemServiceBackup(id: id, name: name, original: original, autoDiscovery: snapshot.autoDiscovery)
     }
@@ -42,12 +45,14 @@ struct SystemServiceBackup: Codable, Equatable, Sendable {
     func resolved(loadSecret: (UUID) -> String? = { ProxyKeychain.password(for: $0) }) throws -> SystemServiceSettings {
         let values = try original.resolved(loadSecret: loadSecret)
         guard let configuration = values["configuration"] else { throw RestorationError.unavailable }
-        if configuration.isEmpty { return try SystemServiceSettings(id: id, name: name, dictionary: nil) }
+        let enabled = values["enabled"] ?? ["1"]
+        guard enabled == ["1"] || enabled == ["0"] else { throw RestorationError.unavailable }
+        if configuration.isEmpty { return try SystemServiceSettings(id: id, name: name, dictionary: nil, protocolEnabled: enabled == ["1"]) }
         guard configuration.count == 1, let data = Data(base64Encoded: configuration[0]),
               (try PropertyListSerialization.propertyList(from: data, options: [], format: nil)) is [String: Any] else {
             throw RestorationError.unavailable
         }
-        return SystemServiceSettings(id: id, name: name, configuration: data)
+        return SystemServiceSettings(id: id, name: name, configuration: data, protocolEnabled: enabled == ["1"])
     }
 }
 

@@ -30,7 +30,8 @@ enum SystemServiceProxy {
                     throw SystemProxyError.command(L("无法读取"))
                 }
                 let dictionary = SCNetworkProtocolGetConfiguration(proxies) as? [String: Any]
-                result.settings.append(try SystemServiceSettings(id: item.id, name: item.name, dictionary: dictionary))
+                result.settings.append(try SystemServiceSettings(id: item.id, name: item.name, dictionary: dictionary,
+                    protocolEnabled: SCNetworkProtocolGetEnabled(proxies)))
             } catch { result.failures[item.name] = Redact.secrets(error.localizedDescription) }
         }
         return result
@@ -151,7 +152,7 @@ enum SystemServiceProxy {
             guard let proxies = SCNetworkServiceCopyProtocol(service, kSCNetworkProtocolTypeProxies) else {
                 result.failures[item.name] = L("无法读取"); continue
             }
-            if SCNetworkProtocolSetConfiguration(proxies, item.dictionary.map { $0 as CFDictionary }) {
+            if SCNetworkProtocolSetConfiguration(proxies, item.dictionary.map { $0 as CFDictionary }) && SCNetworkProtocolSetEnabled(proxies, item.protocolEnabled) {
                 modified.append(item)
             } else {
                 let status = SCError()
