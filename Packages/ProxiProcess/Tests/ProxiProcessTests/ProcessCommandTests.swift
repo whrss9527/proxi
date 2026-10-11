@@ -59,10 +59,17 @@ final class ProcessCommandTests: XCTestCase {
         let task = Task {
             try await ProcessCommand.run("/bin/sh", ["-c", "echo $$ > \"$1\"; trap '' TERM; while :; do :; done", "proxi-test", marker.path])
         }
-        for _ in 0..<100 where !FileManager.default.fileExists(atPath: marker.path) {
+        defer { task.cancel() }
+        var recordedPID: Int32?
+        for _ in 0..<100 {
+            if let text = try? String(contentsOf: marker, encoding: .utf8),
+               let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 {
+                recordedPID = pid
+                break
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
-        let pid = Int32(try String(contentsOf: marker, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines))!
+        let pid = try XCTUnwrap(recordedPID)
         task.cancel()
         do {
             _ = try await task.value
