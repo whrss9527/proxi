@@ -43,40 +43,12 @@ enum SystemProxy {
             }
         }
         guard !services.isEmpty else { throw SystemProxyError.noServices }
-        let commands = services.flatMap { desired.commands(service: $0) }
-        do {
-            try await runNetworksetup(commands, secrets: desired.passwords)
-        } catch SystemProxyError.needsAdmin {
-            Log.info("networksetup 需要管理员权限，改用授权对话框")
-            try await runNetworksetupPrivileged(commands, secrets: desired.passwords)
-        }
+        let all = NetworkServices.all()
+        let result = await SystemServiceProxy.apply(services.map { name in
+            .init(id: all.first { $0.name == name }?.id ?? name, name: name, desired: desired)
+        })
+        if let error = result.error { throw SystemProxyError.command(error) }
         return services
-    }
-
-    /// secrets：命令里的密码，出错时从输出里去掉。
-    private static func runNetworksetup(_ commands: [[String]], secrets: [String]) async throws {
-        for arguments in commands {
-            let result = try await Shell.run(networksetupPath, arguments)
-            let text = Redact.secrets(result.trimmedOutput, known: secrets)
-            if !result.succeeded || text.contains("Error") {
-                if isAdminError(text) {
-                    throw SystemProxyError.needsAdmin(text)
-                }
-                throw SystemProxyError.command(L("networksetup %@ 失败：%@", arguments[0], text))
-            }
-        }
-    }
-
-    /// 用 AppleScript 的 do shell script ... with administrator privileges 一次执行全部命令，系统会弹一次输入密码的对话框。
-    private static func runNetworksetupPrivileged(_ commands: [[String]], secrets: [String]) async throws {
-        let lines = commands.map { arguments in
-            ([networksetupPath] + arguments).map(Shell.shellQuote).joined(separator: " ")
-        }
-        let script = "do shell script " + Shell.appleScriptString(lines.joined(separator: " && ")) + " with administrator privileges"
-        let result = try await Shell.run(osascriptPath, ["-e", script], timeout: 180)
-        if !result.succeeded {
-            throw SystemProxyError.needsAdmin(Redact.secrets(result.trimmedOutput, known: secrets))
-        }
     }
 
     static func isAdminError(_ text: String) -> Bool {
