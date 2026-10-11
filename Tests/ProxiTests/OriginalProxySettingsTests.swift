@@ -237,6 +237,28 @@ final class OriginalProxySettingsTests: XCTestCase {
             XCTFail("读取失败不能视为空设置")
         } catch {}
     }
+
+    func testExitResolvesSnapshotsBeforeWritingAndLeavesUnreadableScopeUntouched() throws {
+        let active: ProxyScopeSnapshot.Values = ["proxy": ["http://debug.corp.example:8888"]]
+        let backend = Backend([.git: active, .npm: active, .environment: active])
+        var snapshots = OriginalProxySettings()
+        snapshots.git = ProxyScopeSnapshot(values: try XCTUnwrap(originals[.git]))
+        snapshots.npm = ProxyScopeSnapshot(values: try XCTUnwrap(originals[.npm]))
+        snapshots.environment = ProxyScopeSnapshot(values: [:], unreadable: true)
+        var reads = 0
+        let failures = ExitCleanup.run([.git, .npm, .environment], systemProxy: DesiredProxy(offWithAutoDiscovery: false, bypassDomains: []),
+                                       services: [], backend: backend, timeout: 2, originals: snapshots, mode: .restore) { snapshot in
+            XCTAssertEqual(backend.values(.git), active)
+            XCTAssertEqual(backend.values(.npm), active)
+            reads += 1
+            return try snapshot.resolved()
+        }
+        XCTAssertEqual(reads, 3)
+        XCTAssertEqual(Set(failures.keys), [.environment])
+        XCTAssertEqual(backend.values(.environment), active)
+        XCTAssertEqual(backend.values(.git), originals[.git])
+        XCTAssertEqual(backend.values(.npm), originals[.npm])
+    }
 }
 
 /// 真实 Git 和 npm 文件操作只使用临时路径；不替换 HOME，不写用户配置或 launchd。

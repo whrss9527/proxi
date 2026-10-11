@@ -72,16 +72,27 @@ struct SystemBackend: ProxyBackend {
 enum ExitCleanup {
     /// 返回没清理成功的项和原因；到时间还没做完的也算没成功（下次启动时接着清理）。
     static func run(_ targets: [ProxyTarget], systemProxy desired: DesiredProxy, services: [String], backend: ProxyBackend, timeout: TimeInterval,
-                    originals: OriginalProxySettings = OriginalProxySettings(), mode: OffMode = .direct) -> [ProxyTarget: String] {
+                    originals: OriginalProxySettings = OriginalProxySettings(), mode: OffMode = .direct,
+                    resolveOriginal: (ProxyScopeSnapshot) throws -> ProxyScopeSnapshot.Values = { try $0.resolved { ProxyKeychain.password(for: $0, allowUI: false) } }) -> [ProxyTarget: String] {
         let outcomes = Outcomes()
         let semaphore = DispatchSemaphore(value: 0)
+        // 钥匙串的“禁止交互”是进程级开关，不能让各并行任务相互恢复它。
+        // 先串行读出恢复值，再并行修改外部设置；读不到的范围保留原样。
+        var loaded: [ProxyTarget: ProxyScopeSnapshot.Values] = [:]
+        for target in targets where mode == .restore {
+            guard let original = originals[target] else { continue }
+            do { loaded[target] = try resolveOriginal(original) }
+            catch { outcomes.record(target, problem: Redact.secrets(error.localizedDescription)) }
+        }
+        let restoreValues = loaded
+        let unresolved = Set(outcomes.snapshot().keys)
         Task.detached {
             await withTaskGroup(of: Void.self) { group in
                 for target in targets {
                     group.addTask {
+                        guard !unresolved.contains(target) else { return }
                         do {
-                            if mode == .restore, let original = originals[target] {
-                                let values = try original.resolved { ProxyKeychain.password(for: $0, allowUI: false) }
+                            if let values = restoreValues[target] {
                                 try await backend.restoreProxySettings(values, for: target)
                             } else {
                                 switch target {
