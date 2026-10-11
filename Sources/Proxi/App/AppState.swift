@@ -781,7 +781,7 @@ final class AppState: ObservableObject {
         }
         let before = persisted
         let legacy = persisted.originalSystemServices == nil && appliedTargets.contains(.system)
-        let read = backend.readSystemServices(also: newOnly ? [] : Array((persisted.originalSystemServices ?? [:]).keys) + persisted.systemServices)
+        let read = backend.readSystemServices(also: newOnly && !legacy ? [] : Array((persisted.originalSystemServices ?? [:]).keys) + persisted.systemServices)
         var failures = read.failures
         var writable: [SystemServiceSettings] = []
         var created: [SystemServiceBackup] = []

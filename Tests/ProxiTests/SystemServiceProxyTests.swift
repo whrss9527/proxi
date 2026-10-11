@@ -208,6 +208,37 @@ final class SystemServiceProxyTests: XCTestCase {
         XCTAssertTrue(backend.written.isEmpty)
     }
 
+    @MainActor
+    func testLegacyNetworkEventIncludesPreviouslyOwnedInactiveService() async throws {
+        let old = try service("wifi", host: "corp.example", enabled: true)
+        let owned = try service("wifi", host: "debug.corp.example", enabled: true)
+        let added = try service("ethernet")
+        let backend = Backend([owned, added], active: ["ethernet"])
+        var persisted = PersistedState(); persisted.enabledByUs = true; persisted.appliedTargets = [.system]
+        persisted.original = old.snapshot; persisted.systemServices = ["Wi-Fi"]
+        let state = state(backend, persisted: persisted)
+        state.networkServicesChanged(); try await wait(state)
+        XCTAssertEqual(state.persisted.originalSystemServices?.count, 2)
+        state.turnOff(); try await wait(state)
+        XCTAssertEqual(backend.value("wifi")!.snapshot, old.snapshot)
+        XCTAssertEqual(backend.value("ethernet"), added)
+    }
+
+    @MainActor
+    func testMissingServiceSecretPreservesItsCurrentSettingsAndRestoresOthers() async throws {
+        let wifi = try service("wifi", host: "corp.example", enabled: true)
+        let ethernet = try service("ethernet")
+        let backend = Backend([wifi, ethernet])
+        var broken = backup(wifi); broken.original.secretID = UUID()
+        var persisted = PersistedState(); persisted.enabledByUs = true; persisted.appliedTargets = [.system]
+        persisted.originalSystemServices = ["wifi": broken, "ethernet": backup(ethernet)]
+        let state = state(backend, persisted: persisted)
+        state.turnOff(); try await wait(state)
+        XCTAssertEqual(backend.value("wifi"), wifi)
+        XCTAssertEqual(backend.restored, ["ethernet"])
+        XCTAssertNotNil(state.persisted.originalSystemServices?["wifi"])
+    }
+
     func testCompleteDictionaryProtectedAndRenamedServiceKeepsIdentity() throws {
         let service = try service("wifi", host: "disabled.corp.example")
         var stored: [UUID: String] = [:]
