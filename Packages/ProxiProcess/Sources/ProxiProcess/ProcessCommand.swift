@@ -21,10 +21,7 @@ public enum ProcessCommand {
         let execution = Execution(executable: executable, arguments: arguments, timeout: timeout)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                // Process.run 本身也可能等待子进程启动，放到 Dispatch 线程上。
-                DispatchQueue.global(qos: .userInitiated).async {
-                    execution.start(continuation)
-                }
+                execution.start(continuation)
             }
         } onCancel: {
             execution.cancel()
@@ -32,14 +29,16 @@ public enum ProcessCommand {
     }
 }
 
-/// 所有可变状态（包括输出读取、句柄关闭和 Process 操作）由 lock 保护。
+/// 初始化后，所有可变状态只在 queue 上访问；回调只向该队列投递事件。
 private final class Execution: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "Proxi.ProcessCommand", qos: .userInitiated)
     private let process = Process()
     private let pipe = Pipe()
     private let timeout: TimeInterval
     private var continuation: CheckedContinuation<CommandResult, Error>?
     private var output = Data()
+    private var descriptor: Int32 = -1
+    private var reader: DispatchSourceRead?
     private var exited = false
     private var eof = false
     private var completed = false
@@ -58,95 +57,99 @@ private final class Execution: @unchecked Sendable {
     }
 
     func start(_ continuation: CheckedContinuation<CommandResult, Error>) {
-        lock.withLock {
-            self.continuation = continuation
-            if cancelled {
-                finish(.failure(CancellationError()))
-                return
-            }
-            let descriptor = pipe.fileHandleForReading.fileDescriptor
-            // 退出与读取回调可能同时到达；非阻塞读取也能识别“已退出但后代还持有写端”。
-            guard fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) != -1 else {
-                finish(.failure(CommandError.launchFailed(String(cString: strerror(errno)))))
-                return
-            }
-            pipe.fileHandleForReading.readabilityHandler = { @Sendable [self] _ in
-                // Foundation 的回调内部可能持有自己的锁，不能在这里等待状态锁。
-                DispatchQueue.global().async {
-                    self.lock.withLock {
-                        self.readOutput()
-                        self.completeIfReady()
-                    }
-                }
-            }
-            process.terminationHandler = { [self] _ in
-                DispatchQueue.global().async {
-                    self.lock.withLock {
-                        self.exited = true
-                        self.readOutput()
-                        self.completeIfReady()
-                    }
-                }
-            }
-            do {
-                try process.run()
-                // 父进程不写管道；否则子进程退出后也可能收不到 EOF。
-                try? pipe.fileHandleForWriting.close()
-            } catch {
-                finish(.failure(CommandError.launchFailed(error.localizedDescription)))
-                return
-            }
-            let timer = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.lock.withLock { self.stop(CommandError.timeout) }
-            }
-            self.timer = timer
-            DispatchQueue.global().asyncAfter(deadline: .now() + max(0, timeout), execute: timer)
-        }
+        queue.async { self.begin(continuation) }
     }
 
     func cancel() {
-        lock.withLock {
-            cancelled = true
-            // onCancel 可以比 start 更早执行；那种情况根本不启动进程。
-            if continuation != nil { stop(CancellationError()) }
+        queue.async {
+            self.cancelled = true
+            // onCancel 可以比 begin 更早执行；那种情况根本不启动进程。
+            if self.continuation != nil { self.stop(CancellationError()) }
         }
     }
 
-    // 以下方法只在持有 lock 时调用。
+    // 以下方法只在 queue 上调用。
+    private func begin(_ continuation: CheckedContinuation<CommandResult, Error>) {
+        self.continuation = continuation
+        if cancelled {
+            finish(.failure(CancellationError()))
+            return
+        }
+        // DispatchSource 独占一个描述符，取消回调确认不再读取后才能关闭，避免句柄复用竞态。
+        descriptor = dup(pipe.fileHandleForReading.fileDescriptor)
+        guard descriptor >= 0 else {
+            finish(.failure(CommandError.launchFailed(String(cString: strerror(errno)))))
+            return
+        }
+        guard fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) != -1 else {
+            let reason = String(cString: strerror(errno))
+            close(descriptor)
+            finish(.failure(CommandError.launchFailed(reason)))
+            return
+        }
+        // 不把这个额外的读端传给子进程。
+        guard fcntl(descriptor, F_SETFD, FD_CLOEXEC) != -1 else {
+            let reason = String(cString: strerror(errno))
+            close(descriptor)
+            finish(.failure(CommandError.launchFailed(reason)))
+            return
+        }
+        let descriptor = descriptor
+        let reader = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
+        reader.setEventHandler { [self] in
+            readOutput()
+            completeIfReady()
+        }
+        reader.setCancelHandler { close(descriptor) }
+        self.reader = reader
+        reader.resume()
+        process.terminationHandler = { [self] _ in
+            // Foundation 回调内部可能持有自己的锁，先投递事件再返回。
+            queue.async {
+                self.exited = true
+                self.readOutput()
+                self.completeIfReady()
+            }
+        }
+        do {
+            // Process.run 本身也可能等待启动；这里运行在 Dispatch 队列，不占协作线程。
+            try process.run()
+            try? pipe.fileHandleForWriting.close()
+        } catch {
+            finish(.failure(CommandError.launchFailed(error.localizedDescription)))
+            return
+        }
+        let timer = DispatchWorkItem { [weak self] in self?.stop(CommandError.timeout) }
+        self.timer = timer
+        queue.asyncAfter(deadline: .now() + max(0, timeout), execute: timer)
+    }
+
     private func stop(_ error: Error) {
         guard !completed, failure == nil else { return }
         failure = error
         if process.isRunning { process.terminate() }
         let escalation = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.lock.withLock {
-                guard !self.completed else { return }
-                if self.process.isRunning { kill(self.process.processIdentifier, SIGKILL) }
-                // 子进程的后代可能仍持有写端；到截止时间就停止收集输出。
-                self.pipe.fileHandleForReading.readabilityHandler = nil
-                try? self.pipe.fileHandleForReading.close()
-                self.eof = true
-                // 部分 Foundation 实现会等后代关闭内部管道才通知父进程退出。
-                // 已发送 SIGKILL 后按截止时间返回，不再等待这个通知。
-                self.finish(.failure(self.failure ?? error))
-            }
+            guard let self, !self.completed else { return }
+            if self.process.isRunning { kill(self.process.processIdentifier, SIGKILL) }
+            // 后代可能持有输出管道；部分 Foundation 实现还会延迟退出通知。
+            // 直接进程已被终止后按截止时间返回，不无限等待后代关闭管道。
+            self.finish(.failure(error))
         }
         self.escalation = escalation
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2, execute: escalation)
+        queue.asyncAfter(deadline: .now() + 2, execute: escalation)
     }
 
     private func readOutput() {
         guard !completed, !eof else { return }
         var buffer = [UInt8](repeating: 0, count: 65536)
-        // 连续写入的命令不能一直占住锁，否则超时和取消也无法生效。
+        // 连续输出不能占住队列；分批让出执行机会，使超时和取消及时生效。
         for _ in 0..<16 {
-            let count = read(pipe.fileHandleForReading.fileDescriptor, &buffer, buffer.count)
+            let count = read(descriptor, &buffer, buffer.count)
             if count > 0 {
                 output.append(contentsOf: buffer.prefix(count))
             } else if count == 0 {
                 eof = true
-                pipe.fileHandleForReading.readabilityHandler = nil
+                reader?.cancel()
                 return
             } else if errno == EINTR {
                 continue
@@ -157,11 +160,9 @@ private final class Execution: @unchecked Sendable {
                 return
             }
         }
-        DispatchQueue.global().async { [self] in
-            lock.withLock {
-                readOutput()
-                completeIfReady()
-            }
+        queue.async {
+            self.readOutput()
+            self.completeIfReady()
         }
     }
 
@@ -180,7 +181,9 @@ private final class Execution: @unchecked Sendable {
         timer?.cancel()
         escalation?.cancel()
         process.terminationHandler = nil
-        pipe.fileHandleForReading.readabilityHandler = nil
+        reader?.setEventHandler {}
+        reader?.cancel()
+        reader = nil
         try? pipe.fileHandleForReading.close()
         try? pipe.fileHandleForWriting.close()
         let pending = continuation
