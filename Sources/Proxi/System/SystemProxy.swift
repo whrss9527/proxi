@@ -1,4 +1,5 @@
 import Foundation
+import ProxiProcess
 import SystemConfiguration
 
 enum SystemProxyError: LocalizedError {
@@ -16,7 +17,7 @@ enum SystemProxyError: LocalizedError {
 }
 
 /// macOS 系统代理（系统设置 → 网络 → 详细信息 → 代理）的读写。
-/// 读取用 SystemConfiguration 的接口，不启动进程；写入用 networksetup 逐个网络服务设置，
+/// 读取用 SystemConfiguration 的接口，不启动进程；写入用 networksetup 并行设置各网络服务，服务内按序执行，
 /// 只写正在使用的服务（接口有地址的），都没有时写全部启用的服务。
 /// networksetup 修改设置需要管理员账户；标准账户时用系统的授权对话框提权后再执行一次。
 enum SystemProxy {
@@ -43,19 +44,21 @@ enum SystemProxy {
             }
         }
         guard !services.isEmpty else { throw SystemProxyError.noServices }
-        let commands = services.flatMap { desired.commands(service: $0) }
+        let batches = services.map { desired.commands(service: $0) }
+        let started = ContinuousClock.now
+        defer { Log.info("系统代理写入：\(services.count) 个服务，耗时 \(started.duration(to: .now))") }
         do {
-            try await runNetworksetup(commands, secrets: desired.passwords)
+            try await runNetworksetup(batches, secrets: desired.passwords)
         } catch SystemProxyError.needsAdmin {
             Log.info("networksetup 需要管理员权限，改用授权对话框")
-            try await runNetworksetupPrivileged(commands, secrets: desired.passwords)
+            try await runNetworksetupPrivileged(batches.flatMap { $0 }, secrets: desired.passwords)
         }
         return services
     }
 
     /// secrets：命令里的密码，出错时从输出里去掉。
-    private static func runNetworksetup(_ commands: [[String]], secrets: [String]) async throws {
-        for arguments in commands {
+    private static func runNetworksetup(_ batches: [[[String]]], secrets: [String]) async throws {
+        try await CommandBatches.run(batches) { arguments in
             let result = try await Shell.run(networksetupPath, arguments)
             let text = Redact.secrets(result.trimmedOutput, known: secrets)
             if !result.succeeded || text.contains("Error") {
