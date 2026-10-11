@@ -105,7 +105,8 @@ enum SystemServiceProxy {
 
     /// 恢复完整协议字典，避免 networksetup 丢掉关着的地址和未知字段。阻塞的授权和提交在独立队列上。
     static func restore(_ settings: [SystemServiceSettings]) async -> SystemServiceResult {
-        await withCheckedContinuation { continuation in
+        guard !settings.isEmpty else { return SystemServiceResult() }
+        return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 var authorization: AuthorizationRef?
                 defer { if let authorization { AuthorizationFree(authorization, []) } }
