@@ -2,6 +2,7 @@ import XCTest
 @testable import ProxiEngine
 #if canImport(Darwin)
 import Darwin
+import Security
 #else
 import Glibc
 #endif
@@ -111,6 +112,28 @@ final class HelperTests: XCTestCase {
         XCTAssertFalse(HelperDaemon(uid: getuid(), appVersion: "0.14.9", clientRequirement: "cdhash H\"00\"").clientAllowed(fds[0]))
         #endif
     }
+
+    #if canImport(Security)
+    func testPeerSignatureChecksTheConnectedProcess() throws {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        defer { close(fds[0]); close(fds[1]) }
+        var code: SecCode?
+        XCTAssertEqual(SecCodeCopySelf([], &code), errSecSuccess)
+        let ownCode = try XCTUnwrap(code)
+        var requirement: SecRequirement?
+        XCTAssertEqual(SecCodeCopyDesignatedRequirement(ownCode, [], &requirement), errSecSuccess)
+        var text: CFString?
+        XCTAssertEqual(SecRequirementCopyString(try XCTUnwrap(requirement), [], &text), errSecSuccess)
+        let ownRequirement = try XCTUnwrap(text) as String
+        // 相同 UID 只通过正确的进程签名；错误或无效要求一律拒绝。
+        XCTAssertTrue(CodeSignature.peer(fds[0], satisfies: ownRequirement))
+        XCTAssertTrue(HelperDaemon(uid: getuid(), appVersion: "test", clientRequirement: ownRequirement).clientAllowed(fds[0]))
+        XCTAssertFalse(CodeSignature.peer(fds[0], satisfies: "identifier \"com.example.unrelated-client\""))
+        XCTAssertFalse(CodeSignature.peer(fds[0], satisfies: "not a requirement"))
+        XCTAssertFalse(CodeSignature.peer(-1, satisfies: ownRequirement))
+    }
+    #endif
 
     // MARK: 以 root 运行前核对配置
 
