@@ -11,10 +11,29 @@ protocol ProxyBackend: Sendable {
     func clearGit() async throws
     func setNpm(proxyURL: String, noProxy: String) throws
     func clearNpm() throws
+    func captureProxySettings(for target: ProxyTarget) async throws -> ProxyScopeSnapshot.Values
+    func restoreProxySettings(_ values: ProxyScopeSnapshot.Values, for target: ProxyTarget) async throws
 }
 
 /// 真正去改这台 Mac 的设置。
 struct SystemBackend: ProxyBackend {
+    func captureProxySettings(for target: ProxyTarget) async throws -> ProxyScopeSnapshot.Values {
+        switch target {
+        case .environment: return try await EnvironmentProxy.snapshot()
+        case .git: return try await GitProxy.snapshot()
+        case .npm: return try NpmProxy.snapshot()
+        case .system: return [:]
+        }
+    }
+
+    func restoreProxySettings(_ values: ProxyScopeSnapshot.Values, for target: ProxyTarget) async throws {
+        switch target {
+        case .environment: try await EnvironmentProxy.restore(values)
+        case .git: try await GitProxy.restore(values)
+        case .npm: try NpmProxy.restore(values)
+        case .system: break
+        }
+    }
     func currentSystemProxy() -> ProxySnapshot {
         SystemProxy.current()
     }
@@ -52,7 +71,8 @@ struct SystemBackend: ProxyBackend {
 /// 标准账户改系统代理要输管理员密码，密码框开着时终端、git、npm 也照样能先清掉。
 enum ExitCleanup {
     /// 返回没清理成功的项和原因；到时间还没做完的也算没成功（下次启动时接着清理）。
-    static func run(_ targets: [ProxyTarget], systemProxy desired: DesiredProxy, services: [String], backend: ProxyBackend, timeout: TimeInterval) -> [ProxyTarget: String] {
+    static func run(_ targets: [ProxyTarget], systemProxy desired: DesiredProxy, services: [String], backend: ProxyBackend, timeout: TimeInterval,
+                    originals: OriginalProxySettings = OriginalProxySettings(), mode: OffMode = .direct) -> [ProxyTarget: String] {
         let outcomes = Outcomes()
         let semaphore = DispatchSemaphore(value: 0)
         Task.detached {
@@ -60,11 +80,16 @@ enum ExitCleanup {
                 for target in targets {
                     group.addTask {
                         do {
-                            switch target {
-                            case .system: _ = try await backend.applySystemProxy(desired, also: services)
-                            case .environment: try await backend.clearEnvironment()
-                            case .git: try await backend.clearGit()
-                            case .npm: try backend.clearNpm()
+                            if mode == .restore, let original = originals[target] {
+                                let values = try original.resolved { ProxyKeychain.password(for: $0, allowUI: false) }
+                                try await backend.restoreProxySettings(values, for: target)
+                            } else {
+                                switch target {
+                                case .system: _ = try await backend.applySystemProxy(desired, also: services)
+                                case .environment: try await backend.clearEnvironment()
+                                case .git: try await backend.clearGit()
+                                case .npm: try backend.clearNpm()
+                                }
                             }
                             outcomes.record(target, problem: nil)
                         } catch {

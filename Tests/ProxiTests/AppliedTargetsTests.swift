@@ -34,6 +34,15 @@ final class AppliedTargetsTests: XCTestCase {
             if failing.contains(.npm) { throw SystemProxyError.command("失败") }
         }
         func clearNpm() throws { calls.append(.npm) }
+        func captureProxySettings(for target: ProxyTarget) async throws -> ProxyScopeSnapshot.Values { [:] }
+        func restoreProxySettings(_ values: ProxyScopeSnapshot.Values, for target: ProxyTarget) async throws {
+            switch target {
+            case .environment: try await clearEnvironment()
+            case .git: try await clearGit()
+            case .npm: try clearNpm()
+            case .system: break
+            }
+        }
     }
 
     @MainActor
