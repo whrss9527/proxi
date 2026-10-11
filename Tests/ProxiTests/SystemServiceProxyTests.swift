@@ -93,7 +93,8 @@ final class SystemServiceProxyTests: XCTestCase {
         config.offMode = mode
         config.notifyLevel = .none
         config.healthCheck = false
-        return AppState(config: config, persisted: persisted, backend: backend, persists: false, backupSystemService: backup)
+        return AppState(config: config, persisted: persisted, backend: backend, persists: false, backupSystemService: backup,
+            resolveSystemService: { try $0.resolved { _ in nil } })
     }
 
     @MainActor
