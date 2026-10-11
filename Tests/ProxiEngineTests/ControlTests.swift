@@ -97,6 +97,15 @@ final class ControlProtocolTests: XCTestCase {
         XCTAssertThrowsError(try params.require("missing"))
     }
 
+    func testDefaultPermissionIsEverydayUse() throws {
+        // 和 Proxi 一样默认只给「日常操作」：改配置要自己在设置里放开；自己选过的照旧。
+        XCTAssertEqual(AutomationConfig().permission, .operate)
+        XCTAssertEqual(try JSONDecoder().decode(AutomationConfig.self, from: Data("{}".utf8)).permission, .operate)
+        XCTAssertEqual(try JSONDecoder().decode(AutomationConfig.self, from: Data(#"{"permission":"bogus"}"#.utf8)).permission, .operate)
+        XCTAssertEqual(try JSONDecoder().decode(AutomationConfig.self, from: Data(#"{"permission":"full"}"#.utf8)).permission, .full)
+        XCTAssertFalse(AutomationConfig().permission.allows(.full))
+    }
+
     func testSocketRoundTrip() throws {
         let path = NSTemporaryDirectory() + "ps-test-\(UUID().uuidString.prefix(6)).sock"
         let server = ControlSocketServer(path: path) { line in

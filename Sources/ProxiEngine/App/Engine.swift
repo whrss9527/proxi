@@ -392,13 +392,16 @@ final class Engine: ObservableObject {
         CoreRunner.killStrays()
         try prepareDirectory()
         try write(text)
+        // 内核控制接口的密钥：自己运行时就是 secret，经助手运行时是助手换上的。
+        let apiSecret: String
         if effectiveTun != nil {
             // 虚拟网卡要 root：请特权助手把文件复制到它的目录，以 root 运行它那份内核。
             tunStatus = .starting
             let helper = helperRunner
             let source = Self.directory.path
             let files = helperFiles
-            try await Task.detached(priority: .userInitiated) {
+            // root 的内核用助手换上的密钥（用户目录里那份配置里的密钥对它没用）。
+            apiSecret = try await Task.detached(priority: .userInitiated) {
                 try helper.start(source: source, files: files)
             }.value
             runningViaHelper = true
@@ -406,9 +409,10 @@ final class Engine: ObservableObject {
         } else {
             guard let executable = CoreBinary.executableURL else { throw CoreRunnerError.missingBinary }
             try runner.start(executable: executable, directory: Self.directory, config: configURL)
+            apiSecret = secret
             runningViaHelper = false
         }
-        let api = CoreAPI(port: engineConfig.apiPort, secret: secret)
+        let api = CoreAPI(port: engineConfig.apiPort, secret: apiSecret)
         self.api = api
         var version: String?
         for _ in 0..<50 {

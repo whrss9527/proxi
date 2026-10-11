@@ -211,7 +211,7 @@ struct NetworkRule: Codable, Identifiable, Equatable, Hashable {
 
 /// 自动化的设置：本机控制接口的权限、按网络自动切换。
 struct AutomationConfig: Codable, Equatable {
-    var permission: ControlPermission = .full
+    var permission: ControlPermission = .operate
     /// 按网络自动切换的总开关。
     var networkSwitching: Bool = true
     var networkRules: [NetworkRule] = []
@@ -224,7 +224,7 @@ struct AutomationConfig: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        permission = (try? container.decodeIfPresent(ControlPermission.self, forKey: .permission)) ?? .full
+        permission = (try? container.decodeIfPresent(ControlPermission.self, forKey: .permission)) ?? .operate
         networkSwitching = try container.decodeIfPresent(Bool.self, forKey: .networkSwitching) ?? true
         networkRules = (try? container.decodeIfPresent([NetworkRule].self, forKey: .networkRules)) ?? []
     }
