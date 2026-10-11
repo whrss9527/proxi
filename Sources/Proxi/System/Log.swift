@@ -89,6 +89,11 @@ enum Store {
         save(state, to: stateURL)
     }
 
+    /// 写外部代理设置之前，必须确认恢复记录已经落盘；失败交给调用方，不能继续覆盖原设置。
+    static func saveRestorationState(_ state: PersistedState) throws {
+        try write(state, to: stateURL)
+    }
+
     private static func load<T: Decodable>(_ type: T.Type, from url: URL) -> T? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         do {
@@ -104,13 +109,17 @@ enum Store {
 
     private static func save<T: Encodable>(_ value: T, to url: URL) {
         do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(value).write(to: url, options: .atomic)
+            try write(value, to: url)
         } catch {
             Log.error("保存 \(url.lastPathComponent) 失败：\(error)")
         }
+    }
+
+    private static func write<T: Encodable>(_ value: T, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(value).write(to: url, options: .atomic)
     }
 }
 

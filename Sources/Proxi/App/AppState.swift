@@ -77,6 +77,7 @@ final class AppState: ObservableObject {
     private var powerOffObserver: NSObjectProtocol?
 
     private var watcher: SystemWatcher?
+    private var restorationSecretsToDelete = Set<UUID>()
     private var refreshTimer: Timer?
     private var healthTimer: Timer?
     private var healthMonitor = ProxyHealthMonitor()
@@ -467,7 +468,13 @@ final class AppState: ObservableObject {
     /// 本机状态写回 state.json（测试时不写）。
     private func savePersisted() {
         if persists {
-            Store.save(persisted)
+            do {
+                try Store.saveRestorationState(persisted)
+                for id in restorationSecretsToDelete { ProxyKeychain.delete(for: id) }
+                restorationSecretsToDelete.removeAll()
+            } catch {
+                Log.error("保存本机状态失败，保留恢复记录：\(error.localizedDescription)")
+            }
         }
     }
 
@@ -561,8 +568,9 @@ final class AppState: ObservableObject {
             }
             persisted.lastProfileID = profile.id
             persisted.enabledByUs = !appliedTargets.isEmpty
-            // 用户重新开启了代理：上次退出时没清理完的不用再清（这次开启已经重新设过了）。
-            persisted.pendingCleanup = nil
+            // 写入中途失败的范围也保留恢复记录，但不把它报告成写成功。
+            let pending = ProxyTarget.allCases.filter { persisted.originalScopes[$0] != nil && !appliedTargets.contains($0) }
+            persisted.pendingCleanup = pending.isEmpty ? nil : PendingCleanup(profileName: profile.name, targets: pending)
             savePersisted()
             finish(action: L("开启 %@", profile.name), failures: failures, successText: profile.summary)
         }
@@ -579,8 +587,9 @@ final class AppState: ObservableObject {
             var failures: [String] = []
             let owned = appliedTargets
             let targets: [ProxyTarget]
-            if !owned.isEmpty {
-                targets = owned
+            let captured = ProxyTarget.allCases.filter { persisted.originalScopes[$0] != nil }
+            if !owned.isEmpty || !captured.isEmpty {
+                targets = Array(Set(owned + captured))
             } else if case .on(let profile) = current {
                 targets = ProxyTarget.allCases.filter { profile.targets.contains($0) }
             } else if case .external = current {
@@ -590,7 +599,8 @@ final class AppState: ObservableObject {
             }
             var remaining: [ProxyTarget] = []
             for target in ProxyTarget.allCases where targets.contains(target) {
-                if let error = await clear(target: target, mode: owned.isEmpty && !current.isOn ? .direct : mode) {
+                let cleanupMode = persisted.originalScopes[target] != nil ? mode : (owned.isEmpty && !current.isOn ? .direct : mode)
+                if let error = await clear(target: target, mode: cleanupMode) {
                     remaining.append(target)
                     failures.append(L("%@：%@", target.title, error))
                 }
@@ -656,6 +666,28 @@ final class AppState: ObservableObject {
     private func set(target: ProxyTarget, profile: Profile, password: String) async -> String? {
         let url = profile.proxyURL(password: password)
         do {
+            // 旧版已经接管的范围没有原值，不能把 Proxi 当前写入的地址再当成原设置。
+            if target != .system, !appliedTargets.contains(target) {
+                let before = persisted
+                let original: ProxyScopeSnapshot
+                if let saved = persisted.originalScopes[target] {
+                    _ = try saved.resolved()
+                    original = saved
+                } else {
+                    original = try ProxyScopeSnapshot.capture(await backend.captureProxySettings(for: target))
+                }
+                persisted.originalScopes[target] = original
+                let pending = Set((persisted.pendingCleanup?.targets ?? []) + [target])
+                persisted.pendingCleanup = PendingCleanup(profileName: profile.name, targets: ProxyTarget.allCases.filter { pending.contains($0) })
+                do {
+                    if persists { try Store.saveRestorationState(persisted) }
+                } catch {
+                    persisted = before
+                    if before.originalScopes[target] == nil { original.discardSecret() }
+                    throw error
+                }
+                // 写入中途失败也保留恢复快照；已成功范围仍只在下面完成后记录。
+            }
             switch target {
             case .system:
                 let written = try await backend.applySystemProxy(DesiredProxy(profile: profile, password: password), also: persisted.systemServices)
@@ -686,18 +718,23 @@ final class AppState: ObservableObject {
 
     private func clear(target: ProxyTarget, mode: OffMode) async -> String? {
         do {
-            switch target {
-            case .system:
-                // 开启时写过、现在没在用的网络服务也一起写（见 PersistedState.systemServices）。
-                _ = try await backend.applySystemProxy(offDesired(mode: mode), also: persisted.systemServices)
-                persisted.systemServices = []
-            case .environment:
-                try await backend.clearEnvironment()
-            case .git:
-                try await backend.clearGit()
-            case .npm:
-                try backend.clearNpm()
+            if mode == .restore, let original = persisted.originalScopes[target] {
+                try await backend.restoreProxySettings(original.resolved(), for: target)
+            } else {
+                switch target {
+                case .system:
+                    // 开启时写过、现在没在用的网络服务也一起写（见 PersistedState.systemServices）。
+                    _ = try await backend.applySystemProxy(offDesired(mode: mode), also: persisted.systemServices)
+                    persisted.systemServices = []
+                case .environment:
+                    try await backend.clearEnvironment()
+                case .git:
+                    try await backend.clearGit()
+                case .npm:
+                    try backend.clearNpm()
+                }
             }
+            forgetOriginal(target)
             persisted.appliedTargets = appliedTargets.filter { $0 != target }
             targetFailures[target] = nil
             return nil
@@ -706,6 +743,11 @@ final class AppState: ObservableObject {
             targetFailures[target] = message
             return message
         }
+    }
+
+    private func forgetOriginal(_ target: ProxyTarget) {
+        if let id = persisted.originalScopes[target]?.secretID { restorationSecretsToDelete.insert(id) }
+        persisted.originalScopes[target] = nil
     }
 
     /// 关闭代理时系统代理要写成什么：恢复开启前的设置，或者直接连接（保留例外列表，自动发现恢复成开启前的值）。
@@ -901,10 +943,13 @@ final class AppState: ObservableObject {
         }
         // 各项都清理好了才记下代理已经关了；没清理完的（管理员密码没输完、出错、超时）记下来，下次启动时接着清理，
         // 开启前的设置也留着，到时候还能恢复。
-        let targets = ProxyTarget.allCases.filter { (appliedTargets.isEmpty ? profile.targets.contains($0) : appliedTargets.contains($0)) }
+        let targets = ProxyTarget.allCases.filter {
+            persisted.originalScopes[$0] != nil || (appliedTargets.isEmpty ? profile.targets.contains($0) : appliedTargets.contains($0))
+        }
         let failures = ExitCleanup.run(targets, systemProxy: offDesired(mode: config.offMode), services: persisted.systemServices,
-                                       backend: backend, timeout: exitCleanupTimeout)
+                                       backend: backend, timeout: exitCleanupTimeout, originals: persisted.originalScopes, mode: config.offMode)
         let remaining = targets.filter { failures[$0] != nil }
+        for target in targets where failures[target] == nil { forgetOriginal(target) }
         persisted.appliedTargets = remaining
         if remaining.isEmpty {
             // 不然只设了终端、git、npm 的配置下次打开时还显示开着，下次开启时也会把这时的设置当成「开启前的设置」。
