@@ -121,8 +121,10 @@ final class HelperTests: XCTestCase {
         var code: SecCode?
         XCTAssertEqual(SecCodeCopySelf([], &code), errSecSuccess)
         let ownCode = try XCTUnwrap(code)
+        var staticCode: SecStaticCode?
+        XCTAssertEqual(SecCodeCopyStaticCode(ownCode, [], &staticCode), errSecSuccess)
         var requirement: SecRequirement?
-        XCTAssertEqual(SecCodeCopyDesignatedRequirement(ownCode, [], &requirement), errSecSuccess)
+        XCTAssertEqual(SecCodeCopyDesignatedRequirement(try XCTUnwrap(staticCode), [], &requirement), errSecSuccess)
         var text: CFString?
         XCTAssertEqual(SecRequirementCopyString(try XCTUnwrap(requirement), [], &text), errSecSuccess)
         let ownRequirement = try XCTUnwrap(text) as String
