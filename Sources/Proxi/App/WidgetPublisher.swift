@@ -42,9 +42,13 @@ final class WidgetPublisher {
         let mode: ProxyWidgetSnapshot.Mode
         switch state.status { case .on: mode = .on; case .off: mode = .off; case .external: mode = .external }
         let health: ProxyWidgetSnapshot.Health
-        switch state.health { case .ok: health = .ok; case .down: health = .down; case .unknown: health = .unknown }
+        if mode == .on {
+            switch state.health { case .ok: health = .ok; case .down: health = .down; case .unknown: health = .unknown }
+        } else {
+            health = .unknown
+        }
         let now = Date()
-        let value = ProxyWidgetSnapshot(now: now, mode: mode, health: health, healthCheckedAt: state.widgetHealthCheckedAt,
+        let value = ProxyWidgetSnapshot(now: now, mode: mode, health: health, healthCheckedAt: health == .unknown ? nil : state.widgetHealthCheckedAt,
                                         selectedName: state.selectedProfile?.name,
                                         profiles: state.config.profiles.map { WidgetProfile(id: $0.id.uuidString, name: $0.name) },
                                         busy: state.busy, partial: state.isPartiallyApplied, appRunning: running)
