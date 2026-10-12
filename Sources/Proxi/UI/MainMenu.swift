@@ -11,6 +11,7 @@ enum MainMenu {
         appMenu.addItem(withTitle: L("关于 Proxi"), action: #selector(MenuActions.showAbout(_:)), keyEquivalent: "").target = MenuActions.shared
         appMenu.addItem(withTitle: L("检查更新…"), action: #selector(MenuActions.checkForUpdates(_:)), keyEquivalent: "").target = MenuActions.shared
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: L("网络监控…"), action: #selector(MenuActions.showNetworkMonitor(_:)), keyEquivalent: "").target = MenuActions.shared
         appMenu.addItem(withTitle: L("设置…"), action: #selector(MenuActions.showSettings(_:)), keyEquivalent: ",").target = MenuActions.shared
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L("隐藏 Proxi"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
@@ -52,6 +53,10 @@ final class MenuActions: NSObject {
 
     @objc func showSettings(_ sender: Any?) {
         SettingsWindowController.shared.show(page: nil)
+    }
+
+    @objc func showNetworkMonitor(_ sender: Any?) {
+        NetworkMonitorWindowController.shared.show()
     }
 
     @objc func showAbout(_ sender: Any?) {

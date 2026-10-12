@@ -140,6 +140,11 @@ final class StatusItemController: NSObject {
             SettingsWindowController.shared.show(page: page)
         case .panel:
             openPanel()
+        case .networkMonitor:
+            closePanel()
+            NetworkMonitorWindowController.shared.show()
+        case .closeNetworkMonitor:
+            NetworkMonitorWindowController.shared.close()
         case .update:
             SettingsWindowController.shared.show(page: .about)
             Task { await state.updater.checkAndInstall() }
@@ -211,6 +216,7 @@ final class StatusItemController: NSObject {
         if state.persisted.extensionState.enabled {
             menu.addItem(item(L("代理引擎设置…"), action: #selector(menuEngineSettings), key: ""))
         }
+        menu.addItem(item(L("网络监控…"), action: #selector(menuNetworkMonitor), key: ""))
         menu.addItem(item(L("设置…"), action: #selector(menuSettings), key: ","))
         menu.addItem(item(L("退出 Proxi"), action: #selector(menuQuit), key: "q"))
         statusItem.menu = menu
@@ -237,6 +243,7 @@ final class StatusItemController: NSObject {
     @objc private func menuTurnOff() { state.turnOff() }
     @objc private func menuSaveExternal() { state.saveExternalAsProfile() }
     @objc private func menuSettings() { SettingsWindowController.shared.show(page: nil) }
+    @objc private func menuNetworkMonitor() { NetworkMonitorWindowController.shared.show() }
     @objc private func menuEngineSettings() { state.extensions.showSettings() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
 
@@ -273,6 +280,12 @@ final class StatusItemController: NSObject {
                     MainActor.assumeIsolated {
                         self?.closePanel()
                         SettingsWindowController.shared.show(page: page)
+                    }
+                },
+                openNetworkMonitor: { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.closePanel()
+                        NetworkMonitorWindowController.shared.show()
                     }
                 },
                 openEngineSettings: { [weak self] in

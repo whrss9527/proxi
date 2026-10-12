@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        NetworkMonitorWindowController.shared.monitor.stop()
         AppState.shared.handleExit()
         Log.info("Proxi 已退出")
     }

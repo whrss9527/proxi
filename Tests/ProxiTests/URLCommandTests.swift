@@ -3,6 +3,8 @@ import XCTest
 
 final class URLCommandTests: XCTestCase {
     func testCommands() {
+        XCTAssertEqual(URLCommand.parse(URL(string: "proxi://network-monitor")!), .networkMonitor)
+        XCTAssertEqual(URLCommand.parse(URL(string: "proxi://network-monitor?action=close")!), .closeNetworkMonitor)
         XCTAssertEqual(URLCommand.parse(URL(string: "proxi://run?tool=test_profiles&profile=%E5%85%AC%E5%8F%B8")!), .tool(name: "test_profiles", params: ["profile": "公司"]))
         XCTAssertEqual(URLCommand.parse(URL(string: "proxi://settings?page=automation")!), .settings(.automation))
         XCTAssertEqual(URLCommand.parse(URL(string: "proxi://settings?page=general")!), .settings(.general))

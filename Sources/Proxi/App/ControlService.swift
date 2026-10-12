@@ -227,6 +227,9 @@ final class ControlService: ObservableObject {
             "panelVisible": NSApp?.windows.contains { $0 is PanelWindow && $0.isVisible } ?? false,
             "settingsVisible": settings.isShowing,
             "settingsPage": settings.navigation.page.rawValue,
+            "networkMonitorVisible": NetworkMonitorWindowController.shared.isShowing,
+            "networkMonitorSampling": NetworkMonitorWindowController.shared.monitor.isRunning,
+            "networkMonitorReady": NetworkMonitorWindowController.shared.monitor.hasSample,
         ] as [String: Any]
         if let release = state.updater.release {
             result["update"] = ["version": release.version, "installing": state.updater.isInstalling] as [String: Any]

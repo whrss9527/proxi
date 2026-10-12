@@ -23,6 +23,12 @@ for page in profiles general automation sync extensions about; do
   show_settings $page
   screencapture -x "screenshots/en-$page.png" || true
 done
+open 'proxi://network-monitor'
+wait_json "$app" '.interface.networkMonitorVisible == true and .interface.networkMonitorSampling == true and .interface.networkMonitorReady == true'
+screencapture -x screenshots/en-network-monitor.png || true
+open 'proxi://network-monitor?action=close'
+wait_json "$app" '.interface.networkMonitorVisible == false and .interface.networkMonitorSampling == false'
+wait_for 10 "网络监控进程停止" not_running nettop
 # 命令行经正在运行的程序拿到的文字也是英文。
 "$app" status
 # 代理引擎的界面文字也有英文（Proxi 启动它时按自己的界面语言传过去；这里直接看它的命令行用法）。
