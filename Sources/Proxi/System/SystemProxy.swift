@@ -16,7 +16,7 @@ enum SystemProxyError: LocalizedError {
 }
 
 /// macOS 系统代理（系统设置 → 网络 → 详细信息 → 代理）的读写。
-/// 读取用 SystemConfiguration 的接口，不启动进程；写入用 networksetup 逐个网络服务设置，
+/// 读取用 SystemConfiguration 的接口，不启动进程；写入用 networksetup 并行设置各服务、服务内按序执行，
 /// 只写正在使用的服务（接口有地址的），都没有时写全部启用的服务。
 /// networksetup 修改设置需要管理员账户；标准账户时用系统的授权对话框提权后再执行一次。
 enum SystemProxy {

@@ -35,6 +35,14 @@ jobs:
         run: bash Scripts/ci/check-public.sh
       - name: 编译
         run: bash Scripts/ci/build.sh
+      - name: 严格并发警告基线
+        if: github.event_name == 'pull_request'
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash Scripts/ci/concurrency-baseline.sh
+      - name: 异步进程与服务并发测试
+        shell: bash
+        run: swift test --package-path Packages/ProxiProcess -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors | tee "$RUNNER_TEMP/test-process.log"
       - name: 安装 fish
         run: bash Scripts/ci/install-fish.sh
       - name: 单元测试

@@ -38,24 +38,42 @@ enum SystemServiceProxy {
     }
 
     static func apply(_ plans: [Plan],
-                      run: (String, [String]) async throws -> ShellResult = { try await Shell.run($0, $1) },
+                      run: @escaping @Sendable (String, [String]) async throws -> ShellResult = { try await Shell.run($0, $1) },
                       authorize: (String) async throws -> ShellResult = { try await Shell.run(SystemProxy.osascriptPath, ["-e", $0], timeout: 180) }) async -> SystemServiceResult {
+        let started = ContinuousClock.now
+        defer { Log.info("系统代理写入：\(plans.count) 个服务，耗时 \(started.duration(to: .now))") }
         var result = SystemServiceResult()
         var privileged: [Plan] = []
-        for plan in plans {
-            do {
-                for arguments in plan.desired.commands(service: plan.name) {
-                    let command = try await run(SystemProxy.networksetupPath, arguments)
-                    let text = Redact.secrets(command.trimmedOutput, known: plan.desired.passwords)
-                    if !command.succeeded || text.contains("Error") {
-                        if SystemProxy.isAdminError(text) { throw SystemProxyError.needsAdmin(text) }
-                        throw SystemProxyError.command(L("networksetup %@ 失败：%@", arguments[0], text))
+        let attempts = await withTaskGroup(of: (Int, String?, Bool).self) { group in
+            for (index, plan) in plans.enumerated() {
+                group.addTask {
+                    do {
+                        for arguments in plan.desired.commands(service: plan.name) {
+                            try Task.checkCancellation()
+                            let command = try await run(SystemProxy.networksetupPath, arguments)
+                            let text = Redact.secrets(command.trimmedOutput, known: plan.desired.passwords)
+                            if !command.succeeded || text.contains("Error") {
+                                if SystemProxy.isAdminError(text) { throw SystemProxyError.needsAdmin(text) }
+                                throw SystemProxyError.command(L("networksetup %@ 失败：%@", arguments[0], text))
+                            }
+                        }
+                        return (index, nil, false)
+                    } catch SystemProxyError.needsAdmin {
+                        return (index, nil, true)
+                    } catch {
+                        return (index, Redact.secrets(error.localizedDescription, known: plan.desired.passwords), false)
                     }
                 }
-                result.succeeded.append(plan.id)
-            } catch SystemProxyError.needsAdmin {
-                privileged.append(plan)
-            } catch { result.failures[plan.name] = Redact.secrets(error.localizedDescription, known: plan.desired.passwords) }
+            }
+            var collected: [(Int, String?, Bool)] = []
+            for await attempt in group { collected.append(attempt) }
+            return collected.sorted { $0.0 < $1.0 }
+        }
+        for (index, error, admin) in attempts {
+            let plan = plans[index]
+            if let error { result.failures[plan.name] = error }
+            else if admin { privileged.append(plan) }
+            else { result.succeeded.append(plan.id) }
         }
         guard !privileged.isEmpty else { return result }
         do {

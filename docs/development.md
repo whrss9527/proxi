@@ -91,3 +91,17 @@ python3 Scripts/check-localization.py # 两种语言的界面文字
 界面和更新脚本会写测试账户的偏好设置、配置与钥匙串；只在 CI 或独立的专用测试账户中运行。专用账户重现时，先准备 `RUNNER_TEMP` 临时目录、可写的 `GITHUB_ENV` 文件，以及打包好的 `dist/`；显式设置 `PROXI_CI_ALLOW_GUI=1`，然后先执行 `prepare.sh`，读取其输出的环境变量，再运行所需脚本，结束时执行 `cleanup.sh`。不要在日常使用的账户中运行这些脚本。
 
 等待统一使用有截止时间的 `wait_for`。`status --json` 增加 `busy`、`interface`（实际语言、可见窗口数、面板是否显示、设置页和是否显示）以及存在新版本时的 `update`；轮询直接读取已有控制套接字，单次读取有超时，不经 CLI 重新打开程序。启动、切页和替换后的版本按这些状态确认，更新下载按假服务实际收到并成功响应的 GET 请求确认。改名前版本的健康检查使用 HEAD，避免误当成程序请求；旧版在启动或检查更新期间可能忽略安装命令，测试按下载包的实际请求等待就绪，发现下载已开始后不再发送链接，超时仍失败。需要检查日志事件时只匹配稳定的机器标记，例如 `event=extension.request`；特权错误的机器标记仅在设置 `PROXI_CI_DIAGNOSTICS=1` 时输出，正常错误说明保持原样。
+
+### 命令执行与并发基线
+
+`Packages/ProxiProcess` 是主程序和可选扩展共用的 Foundation 包。异步 `Shell.run` 使用进程退出、管道可读回调和 continuation 等待，不在 Swift 协作线程上调用 `waitUntilExit`。输出管道持续读取，退出与 EOF 都到达后才返回；超时或取消先发 SIGTERM，两秒后发 SIGKILL 并停止等待。它只管理直接启动的进程，不承诺终止任意后代。同步 `runSync` 仍留给已有的独立同步入口。
+
+网络服务之间并行写入，每个服务内按原顺序执行。普通写入全部结束后才允许进入管理员授权重试；授权路径仍只弹一次对话框并顺序执行整批命令。日志只记录服务数量与耗时，不记录命令参数或密码。
+
+独立回归可在 Linux 或 macOS 运行：
+
+```bash
+swift test --package-path Packages/ProxiProcess -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+```
+
+CI 对整个 App 启用 `-strict-concurrency=complete`，仍使用 Swift 5 语言模式。每个 PR 用同一 Xcode 编译基线 SHA，和当前完整构建的去重 Swift 警告数比较；当前数量增加就失败。基线、当前数量及构建日志保存在 `proxi-ci-build-logs`。共享进程包单独按零警告运行测试。模拟开关测试输出两个服务的实际耗时，App 日志另记真实 networksetup 执行时间。旧代码的并发警告逐步处理，不用 `@unchecked Sendable` 批量压掉。

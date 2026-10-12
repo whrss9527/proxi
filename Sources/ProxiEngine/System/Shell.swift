@@ -1,6 +1,7 @@
 import Foundation
+import ProxiProcess
 
-struct ShellResult {
+struct ShellResult: Sendable {
     let output: String
     let status: Int32
 
@@ -38,12 +39,17 @@ private final class TimeoutFlag: @unchecked Sendable {
     }
 }
 
-/// 运行系统命令。所有调用都在后台线程完成，不阻塞界面。
+/// 异步命令用事件回调等待；runSync 仅供独立同步入口使用。
 enum Shell {
     static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 20) async throws -> ShellResult {
-        try await Task.detached(priority: .userInitiated) {
-            try runSync(executable, arguments, timeout: timeout)
-        }.value
+        do {
+            let result = try await ProcessCommand.run(executable, arguments, timeout: timeout)
+            return ShellResult(output: result.output, status: result.status)
+        } catch CommandError.timeout {
+            throw ShellError.timeout((executable as NSString).lastPathComponent)
+        } catch CommandError.launchFailed(let reason) {
+            throw ShellError.launchFailed((executable as NSString).lastPathComponent, reason)
+        }
     }
 
     static func runSync(_ executable: String, _ arguments: [String], timeout: TimeInterval = 20) throws -> ShellResult {
