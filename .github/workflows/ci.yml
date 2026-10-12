@@ -47,8 +47,12 @@ jobs:
         run: bash Scripts/ci/install-fish.sh
       - name: 单元测试
         run: bash Scripts/ci/test.sh
+      - name: 小组件快照测试
+        run: swift test --package-path Packages/ProxiWidgets
       - name: 打包和检查产物
         run: bash Scripts/ci/package.sh
+      - name: 小组件嵌入与注册
+        run: bash Scripts/check-widget-bundle.sh dist/Proxi.app
       - name: 编译窗口等待工具
         run: bash Scripts/ci/build-tools.sh
       - name: 保留文件权限和符号链接

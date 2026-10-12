@@ -44,6 +44,8 @@ The interface is in English when your system language isn't Chinese, and you can
 
 ## Install
 
+The [proxy widget](docs/widgets.md) shows the last confirmed state and offers proxy on/off and saved-profile links. Widget data access requires the signed app and extension to share the registered App Group.
+
 Requires macOS 14 or later, on Intel or Apple silicon.
 
 With [Homebrew](https://brew.sh), which also puts the `proxi` command on your PATH:

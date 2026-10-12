@@ -171,7 +171,7 @@ def parse_strings(path):
 
 
 def check(sources, resources):
-    keys, unwrapped = scan([sources])
+    keys, unwrapped = scan([sources] + ([ROOT / "Widgets" / "Sources"] if sources.name == "Proxi" else []))
     if "--print-keys" in sys.argv:
         for key in sorted(keys):
             print(key.replace("\n", "\\n").replace("\t", "\\t"))

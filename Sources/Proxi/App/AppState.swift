@@ -50,6 +50,7 @@ final class AppState: ObservableObject {
     @Published private(set) var targetFailures: [ProxyTarget: String] = [:]
     @Published private(set) var snapshot: ProxySnapshot
     @Published private(set) var health: Health = .unknown
+    private(set) var widgetHealthCheckedAt: Date?
     @Published private(set) var busy = false
     @Published var lastError: String?
     /// 快捷键注册不上（被别的程序占用了）时的说明，快捷键页里显示。
@@ -1038,6 +1039,7 @@ final class AppState: ObservableObject {
         // 请求期间可能换配置、关闭代理或关闭检查；旧响应不能改新状态。
         guard !Task.isCancelled, config.healthCheck, case .on(let current) = status,
               current.id == profile.id, current.host == profile.host, current.port == profile.port else { return }
+        widgetHealthCheckedAt = healthClock()
         let notice = healthMonitor.record(reachable, profile: profile, now: healthClock())
         if health != healthMonitor.health {
             health = healthMonitor.health

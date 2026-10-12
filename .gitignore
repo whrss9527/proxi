@@ -5,3 +5,6 @@ screenshots/
 *.xcodeproj
 .DS_Store
 __pycache__/
+
+# Generated widget project
+ProxiWidget.xcodeproj/
