@@ -78,6 +78,9 @@ final class AppState: ObservableObject {
 
     private var watcher: SystemWatcher?
     private var restorationSecretsToDelete = Set<UUID>()
+    private var networkServicesDirty = false
+    private let backupSystemService: (SystemServiceSettings) throws -> SystemServiceBackup
+    private let resolveSystemService: (SystemServiceBackup) throws -> SystemServiceSettings
     private var refreshTimer: Timer?
     private var healthTimer: Timer?
     private var healthMonitor = ProxyHealthMonitor()
@@ -106,7 +109,9 @@ final class AppState: ObservableObject {
     /// 测试时传假的系统后端，persists 为 false 时不写磁盘上的配置和本机状态。
     init(config: AppConfig, persisted: PersistedState, backend: ProxyBackend, legacy: LegacyCleanup.Findings = LegacyCleanup.Findings(), persists: Bool,
          reachability: @escaping (String, Int) async -> Bool = { await ProxyTester.reachable(host: $0, port: $1) },
-         healthClock: @escaping () -> Date = Date.init) {
+         healthClock: @escaping () -> Date = Date.init,
+         backupSystemService: @escaping (SystemServiceSettings) throws -> SystemServiceBackup = { try $0.backup() },
+         resolveSystemService: @escaping (SystemServiceBackup) throws -> SystemServiceSettings = { try $0.resolved() }) {
         self.legacy = legacy
         self.config = config
         self.persisted = persisted
@@ -114,6 +119,8 @@ final class AppState: ObservableObject {
         self.persists = persists
         self.reachability = reachability
         self.healthClock = healthClock
+        self.backupSystemService = backupSystemService
+        self.resolveSystemService = resolveSystemService
         snapshot = backend.currentSystemProxy()
         guard persists else { return }
         $config
@@ -126,7 +133,7 @@ final class AppState: ObservableObject {
 
     /// 启动时调用：开始监听系统变化，注册快捷键。
     func start() {
-        watcher = SystemWatcher { [weak self] in self?.refresh() }
+        watcher = SystemWatcher(onNetworkChange: { [weak self] in self?.networkServicesChanged() }) { [weak self] in self?.refresh() }
         watcher?.start()
         powerOffObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.poweringOffAt = Date() }
@@ -538,7 +545,7 @@ final class AppState: ObservableObject {
             if case .on(let current) = status { return current }
             return persisted.enabledByUs ? selectedProfile : nil
         }()
-        if persisted.original == nil || (old == nil && appliedTargets.isEmpty && !status.isOn) {
+        if !backend.supportsServiceSnapshots && (persisted.original == nil || (old == nil && appliedTargets.isEmpty && !status.isOn)) {
             persisted.original = snapshot
         }
         let mode = config.offMode
@@ -569,7 +576,7 @@ final class AppState: ObservableObject {
             persisted.lastProfileID = profile.id
             persisted.enabledByUs = !appliedTargets.isEmpty
             // 写入中途失败的范围也保留恢复记录，但不把它报告成写成功。
-            let pending = ProxyTarget.allCases.filter { persisted.originalScopes[$0] != nil && !appliedTargets.contains($0) }
+            let pending = ProxyTarget.allCases.filter { hasOriginal($0) && !appliedTargets.contains($0) }
             persisted.pendingCleanup = pending.isEmpty ? nil : PendingCleanup(profileName: profile.name, targets: pending)
             savePersisted()
             finish(action: L("开启 %@", profile.name), failures: failures, successText: profile.summary)
@@ -587,7 +594,7 @@ final class AppState: ObservableObject {
             var failures: [String] = []
             let owned = appliedTargets
             let targets: [ProxyTarget]
-            let captured = ProxyTarget.allCases.filter { persisted.originalScopes[$0] != nil }
+            let captured = ProxyTarget.allCases.filter { hasOriginal($0) }
             if !owned.isEmpty || !captured.isEmpty {
                 targets = Array(Set(owned + captured))
             } else if case .on(let profile) = current {
@@ -599,7 +606,7 @@ final class AppState: ObservableObject {
             }
             var remaining: [ProxyTarget] = []
             for target in ProxyTarget.allCases where targets.contains(target) {
-                let cleanupMode = persisted.originalScopes[target] != nil ? mode : (owned.isEmpty && !current.isOn ? .direct : mode)
+                let cleanupMode = hasOriginal(target) ? mode : (owned.isEmpty && !current.isOn ? .direct : mode)
                 if let error = await clear(target: target, mode: cleanupMode) {
                     remaining.append(target)
                     failures.append(L("%@：%@", target.title, error))
@@ -661,6 +668,7 @@ final class AppState: ObservableObject {
             notify(title: L("%@时出错", action), body: text, problem: true)
         }
         Task { await checkHealth() }
+        if networkServicesDirty { networkServicesChanged() }
     }
 
     private func set(target: ProxyTarget, profile: Profile, password: String) async -> String? {
@@ -690,6 +698,7 @@ final class AppState: ObservableObject {
             }
             switch target {
             case .system:
+                if backend.supportsServiceSnapshots { return await setSystemServices(profile: profile, password: password) }
                 let written = try await backend.applySystemProxy(DesiredProxy(profile: profile, password: password), also: persisted.systemServices)
                 persisted.systemServices = written
             case .environment:
@@ -723,6 +732,9 @@ final class AppState: ObservableObject {
             } else {
                 switch target {
                 case .system:
+                    if backend.supportsServiceSnapshots, persisted.originalSystemServices != nil || persisted.systemServiceBackupsUnreadable || (mode == .direct && !appliedTargets.contains(.system)) {
+                        return await clearSystemServices(mode: mode)
+                    }
                     // 开启时写过、现在没在用的网络服务也一起写（见 PersistedState.systemServices）。
                     _ = try await backend.applySystemProxy(offDesired(mode: mode), also: persisted.systemServices)
                     persisted.systemServices = []
@@ -746,8 +758,140 @@ final class AppState: ObservableObject {
     }
 
     private func forgetOriginal(_ target: ProxyTarget) {
+        if target == .system {
+            for record in (persisted.originalSystemServices ?? [:]).values {
+                if let id = record.original.secretID { restorationSecretsToDelete.insert(id) }
+            }
+            persisted.originalSystemServices = nil
+            persisted.systemServiceBackupsUnreadable = false
+        }
         if let id = persisted.originalScopes[target]?.secretID { restorationSecretsToDelete.insert(id) }
         persisted.originalScopes[target] = nil
+    }
+
+    private func hasOriginal(_ target: ProxyTarget) -> Bool {
+        target == .system ? (!(persisted.originalSystemServices ?? [:]).isEmpty || persisted.systemServiceBackupsUnreadable) : persisted.originalScopes[target] != nil
+    }
+
+    /// 先持久化所有可读服务的原值，再修改；已接管服务在换配置时不重新采集。
+    private func setSystemServices(profile: Profile, password: String, newOnly: Bool = false) async -> String? {
+        guard !persisted.systemServiceBackupsUnreadable else {
+            let error = RestorationError.unavailable.localizedDescription
+            targetFailures[.system] = error
+            return error
+        }
+        let before = persisted
+        let legacy = persisted.originalSystemServices == nil && appliedTargets.contains(.system)
+        let read = backend.readSystemServices(also: newOnly && !legacy ? [] : Array((persisted.originalSystemServices ?? [:]).keys) + persisted.systemServices)
+        var failures = read.failures
+        var writable: [SystemServiceSettings] = []
+        var created: [SystemServiceBackup] = []
+        if persisted.originalSystemServices == nil { persisted.originalSystemServices = [:] }
+        for item in read.settings {
+            if newOnly, persisted.originalSystemServices?[item.id] != nil { continue }
+            do {
+                if let original = persisted.originalSystemServices?[item.id] {
+                    _ = try resolveSystemService(original)
+                    persisted.originalSystemServices?[item.id]?.name = item.name
+                } else {
+                    var original = item
+                    if legacy, persisted.systemServices.isEmpty || persisted.systemServices.contains(item.name) {
+                        guard let snapshot = persisted.original else { throw RestorationError.unavailable }
+                        original = try SystemServiceSettings(id: item.id, name: item.name, dictionary: snapshot.legacyDictionary)
+                    }
+                    let backup = try backupSystemService(original)
+                    persisted.originalSystemServices?[item.id] = backup
+                    created.append(backup)
+                }
+                writable.append(item)
+            } catch { failures[item.name] = Redact.secrets(error.localizedDescription) }
+        }
+        if !writable.isEmpty {
+            let pending = Set((persisted.pendingCleanup?.targets ?? []) + [.system])
+            persisted.pendingCleanup = PendingCleanup(profileName: profile.name, targets: ProxyTarget.allCases.filter { pending.contains($0) })
+            do { if persists { try Store.saveRestorationState(persisted) } }
+            catch {
+                persisted = before
+                for backup in created { backup.original.discardSecret() }
+                let message = Redact.secrets(error.localizedDescription)
+                targetFailures[.system] = message
+                return message
+            }
+            let result = await backend.applySystemServices(DesiredProxy(profile: profile, password: password), services: writable)
+            failures.merge(result.failures) { _, new in new }
+            if !result.succeeded.isEmpty, !appliedTargets.contains(.system) {
+                persisted.appliedTargets = appliedTargets + [.system]
+            }
+            // 包括写到一半失败的服务，关闭或重启清理时也必须恢复它。
+            persisted.systemServices = (persisted.originalSystemServices ?? [:]).values.map(\.name).sorted()
+        } else if read.settings.isEmpty && failures.isEmpty && !newOnly {
+            failures["SystemConfiguration"] = SystemProxyError.noServices.localizedDescription
+        }
+        let message = SystemServiceResult(failures: failures).error
+        targetFailures[.system] = message
+        return message
+    }
+
+    private func clearSystemServices(mode: OffMode) async -> String? {
+        guard mode == .direct || !persisted.systemServiceBackupsUnreadable else {
+            let message = RestorationError.unavailable.localizedDescription
+            targetFailures[.system] = message
+            return message
+        }
+        let records = persisted.originalSystemServices ?? [:]
+        var result: SystemServiceResult
+        if mode == .restore {
+            var settings: [SystemServiceSettings] = []
+            var failures: [String: String] = [:]
+            for record in records.values {
+                do { settings.append(try resolveSystemService(record)) }
+                catch { failures[record.name] = Redact.secrets(error.localizedDescription) }
+            }
+            result = await backend.restoreSystemServices(settings)
+            result.failures.merge(failures) { _, new in new }
+        } else { result = await SystemServiceCleanup.direct(records, also: persisted.systemServices, backend: backend) }
+        for id in result.succeeded {
+            if let secret = persisted.originalSystemServices?[id]?.original.secretID { restorationSecretsToDelete.insert(secret) }
+            persisted.originalSystemServices?[id] = nil
+        }
+        persisted.systemServices = (persisted.originalSystemServices ?? [:]).values.map(\.name).sorted()
+        if result.failures.isEmpty {
+            forgetOriginal(.system)
+            persisted.appliedTargets = appliedTargets.filter { $0 != .system }
+        }
+        targetFailures[.system] = result.error
+        return result.error
+    }
+
+    /// 变化发生在代理操作期间时延后一次处理，只给本次接管中新增的服务补写。
+    func networkServicesChanged() {
+        guard backend.supportsServiceSnapshots else { return }
+        if busy { networkServicesDirty = true; return }
+        guard persisted.enabledByUs, appliedTargets.contains(.system),
+              let profile = selectedProfile, profile.targets.contains(.system) else {
+            networkServicesDirty = false
+            return
+        }
+        networkServicesDirty = true
+        networkServicesDirty = false
+        let password = savedPassword(for: profile, allowUI: false)
+        guard !profile.needsPassword || !password.isEmpty else { return }
+        busy = true
+        Task {
+            let error = await setSystemServices(profile: profile, password: password, newOnly: true)
+            persisted.enabledByUs = !appliedTargets.isEmpty
+            let pending = ProxyTarget.allCases.filter { hasOriginal($0) && !appliedTargets.contains($0) }
+            persisted.pendingCleanup = pending.isEmpty ? nil : PendingCleanup(profileName: profile.name, targets: pending)
+            savePersisted()
+            busy = false
+            refresh()
+            if let error {
+                lastError = error
+                Log.error("新网络服务设置失败：\(error)")
+            }
+            onStatusChanged?()
+            if networkServicesDirty { networkServicesChanged() }
+        }
     }
 
     /// 关闭代理时系统代理要写成什么：恢复开启前的设置，或者直接连接（保留例外列表，自动发现恢复成开启前的值）。
@@ -944,10 +1088,11 @@ final class AppState: ObservableObject {
         // 各项都清理好了才记下代理已经关了；没清理完的（管理员密码没输完、出错、超时）记下来，下次启动时接着清理，
         // 开启前的设置也留着，到时候还能恢复。
         let targets = ProxyTarget.allCases.filter {
-            persisted.originalScopes[$0] != nil || (appliedTargets.isEmpty ? profile.targets.contains($0) : appliedTargets.contains($0))
+            hasOriginal($0) || (appliedTargets.isEmpty ? profile.targets.contains($0) : appliedTargets.contains($0))
         }
         let failures = ExitCleanup.run(targets, systemProxy: offDesired(mode: config.offMode), services: persisted.systemServices,
-                                       backend: backend, timeout: exitCleanupTimeout, originals: persisted.originalScopes, mode: config.offMode)
+                                       backend: backend, timeout: exitCleanupTimeout, originals: persisted.originalScopes, mode: config.offMode,
+                                       systemBackups: persisted.originalSystemServices, systemBackupsUnreadable: persisted.systemServiceBackupsUnreadable)
         let remaining = targets.filter { failures[$0] != nil }
         for target in targets where failures[target] == nil { forgetOriginal(target) }
         persisted.appliedTargets = remaining

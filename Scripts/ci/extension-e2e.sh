@@ -145,6 +145,9 @@ wait_for 10 "关闭后扩展已退出" condition_16
 pgrep -x ProxiEngine && { echo "关闭扩展后代理引擎还在运行"; exit 1; }
 pgrep -x mihomo && { echo "关闭扩展后内核还在运行"; exit 1; }
 [ -z "$(git config --global --includes --get http.proxy || true)" ] || { echo "关闭扩展后 git 代理还在"; exit 1; }
+# enabled=false 在异步退出和删除之前写入；等实际文件消失，再保留原来的卸载断言。
+condition_removed() { [ ! -e "$app" ]; }
+wait_for 15 "下载的代理引擎已删除" condition_removed
 [ ! -e "$app" ] || { echo "「关闭并移除」后程序还在"; exit 1; }
 [ -f "$engine/config.json" ] && grep -q "测试订阅" "$engine/config.json" || { echo "关闭扩展不该删掉它的数据"; exit 1; }
 "$cli" status --json > "$RUNNER_TEMP/off-status.json"

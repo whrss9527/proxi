@@ -1,8 +1,8 @@
 import Foundation
 
 /// 要写入系统的代理设置，以及生成 networksetup 命令的逻辑（纯函数，便于测试）。
-struct DesiredProxy: Equatable {
-    struct Endpoint: Equatable {
+struct DesiredProxy: Equatable, Sendable {
+    struct Endpoint: Equatable, Sendable {
         var host: String
         var port: Int
         /// 代理要求登录时的用户名和密码；用户名为空表示不用登录。
