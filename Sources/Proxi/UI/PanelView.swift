@@ -51,6 +51,21 @@ struct PanelView: View {
             if let error = state.lastError {
                 errorCard(error)
             }
+            Button {
+                actions.openNetworkMonitor()
+            } label: {
+                HStack {
+                    Label(L("网络监控"), systemImage: "chart.bar.xaxis")
+                    Spacer()
+                    Image(systemName: "arrow.up.forward")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.system(size: 12, weight: .medium))
+                .padding(10)
+            }
+            .buttonStyle(HoverRowStyle())
+            .glassCard()
+            .help(L("网络监控：查看各应用的上传与下载"))
             footer
         }
         .padding(12)
@@ -269,15 +284,6 @@ struct PanelView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
-
-            Button {
-                actions.openNetworkMonitor()
-            } label: {
-                Image(systemName: "chart.bar.xaxis")
-            }
-            .buttonStyle(IconButtonStyle())
-            .help(L("网络监控：查看各应用的上传与下载"))
-            .accessibilityLabel(L("网络监控"))
 
             if state.persisted.extensionState.enabled {
                 Button {
