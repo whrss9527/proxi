@@ -16,13 +16,12 @@ if [[ ! -x "$GENERATOR" ]]; then
   ditto -x -k "$WORK/xcodegen.zip" "$TOOLS"
 fi
 [[ "$($GENERATOR --version)" == "Version: $XCODEGEN_VERSION" ]]
-mkdir -p .build/widget-project
-"$GENERATOR" generate --spec widget-project.yml --project .build/widget-project
+"$GENERATOR" generate --spec widget-project.yml
 ARCH_FLAGS=(ONLY_ACTIVE_ARCH=YES)
 if [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]]; then
   ARCH_FLAGS=("ARCHS=arm64 x86_64" ONLY_ACTIVE_ARCH=NO)
 fi
-xcodebuild build -project .build/widget-project/ProxiWidget.xcodeproj -scheme ProxiWidget \
+xcodebuild build -project ProxiWidget.xcodeproj -scheme ProxiWidget \
   -configuration Release -derivedDataPath .build/widgets CODE_SIGNING_ALLOWED=NO \
   "MARKETING_VERSION=$VERSION" "CURRENT_PROJECT_VERSION=$BUILD" "${ARCH_FLAGS[@]}"
 mkdir -p "$APP/Contents/PlugIns"
