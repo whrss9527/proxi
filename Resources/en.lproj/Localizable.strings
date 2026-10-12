@@ -1,5 +1,7 @@
 /* 英文界面。键是代码里 L("…") 的中文原文，改了代码里的中文要同时改这里；Scripts/check-localization.py 会检查。 */
 
+"%@ 开启前" = "%@ before enabling";
+
 /* App/AppDelegate.swift */
 "设置…" = "Settings…";
 

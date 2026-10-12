@@ -230,6 +230,9 @@ struct PersistedState: Codable, Equatable {
     var original: ProxySnapshot?
     /// Git、npm 和 launchd 的开启前设置；含密码的内容只在本机钥匙串里。
     var originalScopes = OriginalProxySettings()
+    /// nil 是旧版；字典按稳定的服务 ID 保存，认证字段只在钥匙串中。
+    var originalSystemServices: [String: SystemServiceBackup]?
+    var systemServiceBackupsUnreadable = false
     /// 开启时写过系统代理的网络服务：关闭时这些也一起写，哪怕那时候没在用（比如开启时插着网线、关闭时拔掉了）。
     var systemServices: [String] = []
     /// iCloud 同步的开关是本机的，不跟着配置同步。
@@ -246,7 +249,7 @@ struct PersistedState: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case lastProfileID, enabledByUs, original, systemServices, syncEnabled, noticeShown
         case extensionState = "extension"
-        case pendingCleanup, appliedTargets, originalScopes
+        case pendingCleanup, appliedTargets, originalScopes, originalSystemServices, systemServiceBackupsUnreadable
     }
 
     init(from decoder: Decoder) throws {
@@ -266,6 +269,9 @@ struct PersistedState: Codable, Equatable {
                 originalScopes[target] = ProxyScopeSnapshot(values: [:], unreadable: true)
             }
         }
+        do { originalSystemServices = try container.decodeIfPresent([String: SystemServiceBackup].self, forKey: .originalSystemServices) }
+        catch { systemServiceBackupsUnreadable = true }
+        systemServiceBackupsUnreadable = systemServiceBackupsUnreadable || ((try? container.decodeIfPresent(Bool.self, forKey: .systemServiceBackupsUnreadable)) ?? false)
         systemServices = (try? container.decodeIfPresent([String].self, forKey: .systemServices)) ?? []
         syncEnabled = (try? container.decodeIfPresent(Bool.self, forKey: .syncEnabled)) ?? false
         noticeShown = (try? container.decodeIfPresent(Bool.self, forKey: .noticeShown)) ?? false

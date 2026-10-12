@@ -2,7 +2,7 @@ import Foundation
 import SystemConfiguration
 
 /// 系统代理设置的一份快照（SCDynamicStoreCopyProxies 的内容）。关着的协议仍可能保留地址。
-struct ProxySnapshot: Codable, Equatable {
+struct ProxySnapshot: Codable, Equatable, Sendable {
     var httpEnabled = false
     var httpHost = ""
     var httpPort = 0

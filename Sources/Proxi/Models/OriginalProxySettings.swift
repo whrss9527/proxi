@@ -25,10 +25,15 @@ struct ProxyScopeSnapshot: Codable, Equatable, Sendable {
     static func capture(_ values: Values, storeSecret: (String, UUID) throws -> Void = { try ProxyKeychain.set($0, for: $1) }) throws -> Self {
         let containsSecret = values.values.joined().contains { Redact.secrets($0) != $0 }
         guard containsSecret else { return Self(values: values) }
+        return try protected(values, display: values.mapValues { $0.map(Redact.secrets) }, storeSecret: storeSecret)
+    }
+
+    /// 系统协议字典可能含未知认证字段，整份存钥匙串，磁盘上只放脱敏的说明。
+    static func protected(_ values: Values, display: Values, storeSecret: (String, UUID) throws -> Void = { try ProxyKeychain.set($0, for: $1) }) throws -> Self {
         let id = UUID()
         let data = try JSONEncoder().encode(values)
         try storeSecret(String(decoding: data, as: UTF8.self), id)
-        return Self(values: values.mapValues { $0.map(Redact.secrets) }, secretID: id)
+        return Self(values: display, secretID: id)
     }
 
     func resolved(loadSecret: (UUID) -> String? = { ProxyKeychain.password(for: $0) }) throws -> Values {
