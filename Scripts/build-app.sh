@@ -58,6 +58,8 @@ done
 # 关于页的赞赏码（「请我喝杯咖啡」）。
 [ -f Resources/donate-wechat.png ] && cp Resources/donate-wechat.png "$APP/Contents/Resources/donate-wechat.png"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+APP="$APP" VERSION="$VERSION" BUILD="$BUILD" IDENTITY="$IDENTITY" ARCHS="$ARCHS" \
+  bash Scripts/build-widgets.sh
 
 # 没有开发者证书时用 ad-hoc 签名，Apple 芯片上必须有签名才能运行。
 sign "$APP" "$ENTITLEMENTS"
@@ -97,7 +99,7 @@ if [ -n "${THIN_ARCHIVES:-}" ]; then
     rm -rf "$dir" && mkdir -p "$dir"
     ditto "$APP" "${dir}/Proxi.app"
     missing=""
-    for bin in "${dir}/Proxi.app/Contents/MacOS/Proxi"; do
+    for bin in "${dir}/Proxi.app/Contents/MacOS/Proxi" "${dir}/Proxi.app/Contents/PlugIns/ProxiWidget.appex/Contents/MacOS/ProxiWidget"; do
       [ -f "$bin" ] || continue
       archs="$(lipo -archs "$bin")"
       if [ "$archs" = "$arch" ]; then
@@ -115,6 +117,7 @@ if [ -n "${THIN_ARCHIVES:-}" ]; then
       rm -rf "$dir"
       continue
     fi
+    sign "${dir}/Proxi.app/Contents/PlugIns/ProxiWidget.appex" Widgets/ProxiWidget.entitlements
     sign "${dir}/Proxi.app" "$ENTITLEMENTS"
     codesign --verify --deep --strict "${dir}/Proxi.app"
     (cd "$dir" && ditto -c -k --keepParent Proxi.app "../Proxi-macos-${arch}.zip")

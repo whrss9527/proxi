@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusController: StatusItemController?
     private var signalSources: [DispatchSourceSignal] = []
     private var settingsPageObserver: NSObjectProtocol?
+    private let widgetPublisher = WidgetPublisher()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandlers()
@@ -46,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SettingsWindowController.shared.show(page: page)
         }
         let state = AppState.shared
+        widgetPublisher.start(state: state)
         Notifier.shared.start()
         Notifier.shared.onOpen = { route in
             SettingsWindowController.shared.show(page: route == "about" ? SettingsPage.about : SettingsPage.profiles)
@@ -88,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         AppState.shared.handleExit()
+        widgetPublisher.stop(state: AppState.shared)
         Log.info("Proxi 已退出")
     }
 

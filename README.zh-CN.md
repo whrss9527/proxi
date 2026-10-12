@@ -46,6 +46,8 @@ Proxi 只负责切换设置，自己不提供代理服务，也不转发流量�
 
 用 [Homebrew](https://brew.sh) 安装（同时装好 `proxi` 命令）：
 
+[代理小组件](docs/widgets.md)可显示最近确认的状态，并提供开关与已保存配置入口；读取快照需要正式签名的主程序和扩展配置好同一共享组。
+
 ```sh
 brew install --cask whrss9527/tap/proxi
 ```

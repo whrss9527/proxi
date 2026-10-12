@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>com.apple.security.application-groups</key>
+	<array><string>group.com.whrss9527.proxyswitch.widgets</string></array>
 	<!-- 按网络自动切换要读 Wi‑Fi 名字：macOS 14 起要定位权限，开了 hardened runtime 的程序还要声明这一项。 -->
 	<key>com.apple.security.personal-information.location</key>
 	<true/>

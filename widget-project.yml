@@ -1,0 +1,37 @@
+name: ProxiWidget
+options:
+  minimumXcodeGenVersion: 2.44.1
+  deploymentTarget:
+    macOS: '14.0'
+  developmentLanguage: en
+packages:
+  WidgetSupport:
+    path: Packages/ProxiWidgets
+targets:
+  ProxiWidget:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Widgets/Sources
+      - path: Resources/en.lproj
+        buildPhase: resources
+      - path: Resources/zh-Hans.lproj
+        buildPhase: resources
+    dependencies:
+      - package: WidgetSupport
+        product: ProxiWidgets
+    settings:
+      base:
+        SWIFT_VERSION: '5.0'
+        MACOSX_DEPLOYMENT_TARGET: '14.0'
+        PRODUCT_BUNDLE_IDENTIFIER: com.whrss9527.proxyswitch.widgets
+        INFOPLIST_FILE: Widgets/Info.plist
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+schemes:
+  ProxiWidget:
+    build:
+      targets:
+        ProxiWidget: all

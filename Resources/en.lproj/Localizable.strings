@@ -619,3 +619,16 @@
 "开启前" = "Before enabling";
 "git 开启前" = "Git before enabling";
 "npm 开启前" = "npm before enabling";
+
+// Widgets
+"代理小组件" = "Proxy widget";
+"其他程序设置的代理" = "Proxy set by another app";
+"尚未检测连接" = "Connection not checked";
+"打开 Proxi 读取配置" = "Open Proxi to load profiles";
+"操作中" = "Working";
+"查看最近确认的状态，点击开关或切换配置。" = "View the last confirmed state. Click to turn the proxy on or off or select a profile.";
+"缓存状态" = "Cached state";
+"记录时间" = "Recorded";
+"连接失败" = "Connection failed";
+"连接正常" = "Connection OK";
+"部分范围未生效" = "Some targets failed";
