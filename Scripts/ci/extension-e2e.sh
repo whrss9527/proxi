@@ -80,6 +80,23 @@ wait_for 30 "扩展设置窗口" dist/ci-window-ready com.whrss9527.proxyswitch.
 screencapture -x screenshots/engine-settings.png || true
 # 验证切换设置期间也不会临时进入 Dock（持续采样，而非只检查最终状态）。
 swift Scripts/check-settings-dock.swift "$app"
+# 隐藏的设置不会继续订阅实时日志或重画网速曲线；重新打开恢复。
+show_engine_page() {
+  open -a "$app"
+  wait_json "$bin" '.interface.settingsActive == true'
+  dist/ci-engine-page "$1"
+  wait_json "$bin" ".interface.settingsPage == \"$1\""
+}
+show_engine_page advanced
+wait_json "$bin" '.interface.settingsActive == true and .interface.liveLogStreaming == true'
+show_settings general
+wait_json "$bin" '.interface.settingsActive == false and .interface.liveLogStreaming == false and .interface.speedHistoryPublishing == false'
+show_engine_page advanced
+wait_json "$bin" '.interface.settingsActive == true and .interface.liveLogStreaming == true'
+show_engine_page connections
+wait_json "$bin" '.interface.settingsActive == true and .interface.liveLogStreaming == false and .interface.speedHistoryPublishing == true'
+show_settings general
+wait_json "$bin" '.interface.settingsActive == false and .interface.liveLogStreaming == false and .interface.speedHistoryPublishing == false'
 # 特权助手：装的时候核对内核的校验和，认不出的内核不装；装好以后经它以 root 运行内核（网关模式）。
 printf 'not the core' > "$RUNNER_TEMP/fake-core"; chmod +x "$RUNNER_TEMP/fake-core"
 # shellcheck disable=SC2024

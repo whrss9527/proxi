@@ -115,6 +115,11 @@ final class NetworkMonitorTests: XCTestCase {
         try await waitUntil { monitor.hasSample }
         XCTAssertEqual(monitor.download, 1000)
         XCTAssertEqual(monitor.applications.first?.download, 10_000)
+        monitor.stop(clearSamples: true)
+        XCTAssertTrue(monitor.applications.isEmpty)
+        XCTAssertFalse(monitor.hasSample)
+        XCTAssertNil(monitor.updatedAt)
+        XCTAssertEqual(monitor.download, 0)
     }
 
     @MainActor

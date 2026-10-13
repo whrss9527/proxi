@@ -167,8 +167,13 @@ final class Engine: ObservableObject {
     /// 上次校验过的补丁内容和结果：补丁没变就不重复跑 mihomo -t。
     private var checkedPatch: (text: String, problem: String?)?
     private var lastSpeedSample: (date: Date, traffic: TrafficTotal)?
+    private var speedSamples: [SpeedSample] = []
+    private var speedHistoryVisible = false
+    private var settingsWindowVisible = false
+    var isSpeedHistoryPublishing: Bool { speedHistoryVisible }
     private var logTask: Task<Void, Never>?
     private var logSubscribers = 0
+    var isLiveLogStreaming: Bool { logTask != nil }
     private var pendingLog: [LogLine] = []
     private var logFlushScheduled = false
     /// 「最近的网速」保留的点数（每两秒一个，共两分钟）。
@@ -242,10 +247,12 @@ final class Engine: ObservableObject {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
         }
+        refreshTimer?.tolerance = 6
         // 规则集到期了就重新下载（间隔和订阅一样，默认 24 小时）。
         ruleUpdateTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.autoUpdateRuleSets() }
         }
+        ruleUpdateTimer?.tolerance = 180
         scheduleReconcile()
     }
 
@@ -462,6 +469,7 @@ final class Engine: ObservableObject {
         exitNode = nil
         exitTask?.cancel()
         speedHistory = []
+        speedSamples = []
         lastSpeedSample = nil
         manualNodeCount = nil
         updateTunStatus()
@@ -832,20 +840,28 @@ final class Engine: ObservableObject {
     }
 
     /// 按两次采样之间总流量的差算网速，留最近两分钟。
-    private func recordSpeed(_ total: TrafficTotal) {
-        let now = Date()
+    func recordSpeed(_ total: TrafficTotal, now: Date = Date()) {
         defer { lastSpeedSample = (now, total) }
         guard let last = lastSpeedSample else { return }
         let seconds = now.timeIntervalSince(last.date)
         guard seconds > 0.5 else { return }
         let up = max(0, total.upload - last.traffic.upload)
         let down = max(0, total.download - last.traffic.download)
-        var history = speedHistory
+        var history = speedSamples
         history.append(SpeedSample(date: now, upload: Int64(Double(up) / seconds), download: Int64(Double(down) / seconds)))
         if history.count > Self.speedHistoryLimit {
             history.removeFirst(history.count - Self.speedHistoryLimit)
         }
-        speedHistory = history
+        speedSamples = history
+        if speedHistoryVisible { speedHistory = history }
+    }
+
+    /// 后台保留统计，但只有连接页可见时才通知 SwiftUI 重画网速曲线。
+    func setSpeedHistoryVisible(_ visible: Bool) {
+        let visible = visible && settingsWindowVisible
+        guard visible != speedHistoryVisible else { return }
+        speedHistoryVisible = visible
+        if visible { speedHistory = speedSamples }
     }
 
     private func record(_ list: [CoreConnection]) {
@@ -1295,8 +1311,10 @@ final class Engine: ObservableObject {
             let (proxies, providers) = try await (proxiesTask, providersTask)
             let ruleProviders = (try? await ruleProvidersTask) ?? [:]
             let engine = engineConfig
-            currentSelection = proxies[Self.selectorGroup]?.now
-            autoNode = proxies[Self.autoGroup]?.now
+            let selection = proxies[Self.selectorGroup]?.now
+            let automatic = proxies[Self.autoGroup]?.now
+            if selection != currentSelection { currentSelection = selection }
+            if automatic != autoNode { autoNode = automatic }
             var list: [Node] = []
             var statuses: [UUID: SubscriptionStatus] = [:]
             for subscription in engine.activeSubscriptions {
@@ -1320,8 +1338,8 @@ final class Engine: ObservableObject {
             if list.map(\.name) != nodes.map(\.name) {
                 Log.info("读取到 \(list.count) 个节点")
             }
-            nodes = list
-            subscriptionStatus = statuses
+            if list != nodes { nodes = list }
+            if statuses != subscriptionStatus { subscriptionStatus = statuses }
             var groups: [GroupState] = []
             for group in engine.groups {
                 guard let proxy = proxies[group.name] else { continue }
@@ -1928,9 +1946,26 @@ final class Engine: ObservableObject {
 
     // MARK: - 实时日志
 
+    /// AppKit 隐藏窗口不一定使 SwiftUI onDisappear 执行，必须直接停止后台日志任务。
+    func setSettingsWindowVisible(_ visible: Bool) {
+        guard visible != settingsWindowVisible else { return }
+        settingsWindowVisible = visible
+        if !visible { setSpeedHistoryVisible(false) }
+        updateLiveLogSubscription()
+    }
+
     /// 高级页打开时订阅内核的实时日志，关掉时退订；内核重启后自动接上。
     func subscribeLiveLog() {
         logSubscribers += 1
+        updateLiveLogSubscription()
+    }
+
+    private func updateLiveLogSubscription() {
+        guard settingsWindowVisible, logSubscribers > 0 else {
+            logTask?.cancel()
+            logTask = nil
+            return
+        }
         guard logTask == nil else { return }
         logTask = Task { @MainActor [weak self] in
             var nextID = 0
@@ -1960,10 +1995,7 @@ final class Engine: ObservableObject {
 
     func unsubscribeLiveLog() {
         logSubscribers = max(0, logSubscribers - 1)
-        if logSubscribers == 0 {
-            logTask?.cancel()
-            logTask = nil
-        }
+        updateLiveLogSubscription()
     }
 
     func clearLiveLog() {

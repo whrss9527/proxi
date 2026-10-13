@@ -141,8 +141,8 @@ final class AppState: ObservableObject {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
-        healthChecksStarted = true
-        scheduleHealthCheck()
+        refreshTimer?.tolerance = 2
+        startHealthChecks()
         loginItemEnabled = LoginItem.isEnabled
         extensions.readState = { [weak self] in self?.persisted.extensionState ?? ExtensionState() }
         extensions.writeState = { [weak self] state in
@@ -490,6 +490,7 @@ final class AppState: ObservableObject {
         // 没变就不赋值：每次赋值都会让所有界面重画（设置窗口里的配置编辑页每次重画都要读一遍钥匙串）。
         guard current != snapshot else { return }
         snapshot = current
+        scheduleHealthCheck()
         onStatusChanged?()
     }
 
@@ -1010,18 +1011,37 @@ final class AppState: ObservableObject {
         }
     }
 
+    var isHealthCheckScheduled: Bool { healthTimer != nil }
+
+    /// 单独启动健康检查，便于验证关闭代理时没有定时器，重新开启后能恢复。
+    func startHealthChecks() {
+        guard !healthChecksStarted else { return }
+        healthChecksStarted = true
+        $config.map(\.healthCheck)
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor in await self?.checkHealth() }
+            }
+            .store(in: &cancellables)
+        scheduleHealthCheck()
+    }
+
     private func scheduleHealthCheck() {
-        guard healthChecksStarted else { return }
         healthTimer?.invalidate()
+        healthTimer = nil
+        guard healthChecksStarted, config.healthCheck, case .on(let profile) = status, profile.kind != .pac else { return }
         healthTimer = Timer.scheduledTimer(withTimeInterval: healthMonitor.interval, repeats: false) { [weak self] _ in
             Task { @MainActor in await self?.checkHealth() }
         }
+        healthTimer?.tolerance = healthMonitor.interval * 0.2
     }
 
     func checkHealth() async {
         guard !healthCheckRunning else { return }
         healthCheckRunning = true
         healthTimer?.invalidate()
+        healthTimer = nil
         defer {
             healthCheckRunning = false
             scheduleHealthCheck()

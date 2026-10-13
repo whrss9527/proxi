@@ -275,6 +275,7 @@ final class CloudSync: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.pullIfChanged() }
         }
+        timer?.tolerance = 6
     }
 
     private func stopWatching() {

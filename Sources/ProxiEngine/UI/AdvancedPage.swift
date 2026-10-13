@@ -421,11 +421,15 @@ struct PatchSection: View {
 // MARK: - 实时日志
 
 struct LiveLogSection: View {
+    @Environment(\.settingsWindowVisible) private var windowVisible
     @ObservedObject var engine: Engine
     @State private var level = "all"
     @State private var filter = ""
     @State private var paused = false
     @State private var frozen: [LogLine] = []
+    @State private var subscribed = false
+
+    private var shouldSubscribe: Bool { windowVisible && !paused && engine.isRunning }
 
     private var lines: [LogLine] {
         let source = paused ? frozen : engine.liveLog
@@ -483,8 +487,14 @@ struct LiveLogSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .onAppear { engine.subscribeLiveLog() }
-        .onDisappear { engine.unsubscribeLiveLog() }
+        .onChange(of: shouldSubscribe, initial: true) { _, wanted in updateSubscription(wanted) }
+        .onDisappear { updateSubscription(false) }
+    }
+
+    private func updateSubscription(_ wanted: Bool) {
+        guard subscribed != wanted else { return }
+        subscribed = wanted
+        if wanted { engine.subscribeLiveLog() } else { engine.unsubscribeLiveLog() }
     }
 
     private func color(_ level: String) -> Color {

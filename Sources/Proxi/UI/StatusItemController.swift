@@ -11,6 +11,8 @@ final class StatusItemController: NSObject {
     private var hostingView: NSHostingView<PanelView>?
     private var keyObserver: Any?
     private var cancellables = Set<AnyCancellable>()
+    private let imageUpdates = StatusImageUpdates()
+    private var appearanceObservation: NSKeyValueObservation?
 
     init(state: AppState) {
         self.state = state
@@ -21,6 +23,9 @@ final class StatusItemController: NSObject {
             button.action = #selector(statusItemClicked(_:))
             _ = button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.imagePosition = .imageOnly
+            appearanceObservation = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+                Task { @MainActor in self?.updateSpeedLabel() }
+            }
         }
         // 更新条出现、进度变化时面板高度会变，跟着调整窗口。
         state.updater.$phase
@@ -43,8 +48,10 @@ final class StatusItemController: NSObject {
     private func updateSpeedLabel() {
         guard let button = statusItem.button else { return }
         let meter = state.speed
+        var input = StatusImageInput(state: iconState, appearance: button.effectiveAppearance.name.rawValue)
         if meter.mode == .none {
-            button.image = StatusIcon.image(for: iconState)
+            input.upload = nil
+            input.download = nil
         } else {
             let iconState = self.iconState
             let layout = SpeedLayout.resolve(side: state.config.speedSide, state: iconState)
@@ -52,11 +59,15 @@ final class StatusItemController: NSObject {
             if state.config.speedColorFollowsStatus, let accent = StatusIcon.speedTextColor(for: iconState, darkMenuBar: isDark(button)) {
                 textColor = accent.cgColor
             }
-            button.image = StatusIcon.image(for: iconState, upload: SpeedFormatter.compact(bytesPerSecond: meter.upload), download: SpeedFormatter.compact(bytesPerSecond: meter.download), textColor: textColor, layout: layout)
+            input.upload = SpeedFormatter.compact(bytesPerSecond: meter.upload)
+            input.download = SpeedFormatter.compact(bytesPerSecond: meter.download)
+            input.textColor = textColor
+            input.layout = layout
         }
-        button.imagePosition = .imageOnly
+        if let image = imageUpdates.imageIfChanged(input) { button.image = image }
         // 提示里的网速跟着图标一起更新。
-        button.toolTip = tooltip + (meter.mode == .none ? "" : "\n↑ \(SpeedFormatter.full(bytesPerSecond: meter.upload))  ↓ \(SpeedFormatter.full(bytesPerSecond: meter.download))")
+        let text = tooltip + (meter.mode == .none ? "" : "\n↑ \(SpeedFormatter.full(bytesPerSecond: meter.upload))  ↓ \(SpeedFormatter.full(bytesPerSecond: meter.download))")
+        if button.toolTip != text { button.toolTip = text }
     }
 
     /// 菜单栏现在是不是深色（深色模式，或者浅色模式下被桌面衬成深色）。

@@ -106,6 +106,38 @@ jobs:
             ${{ runner.temp }}/fixture-requests*.jsonl
           retention-days: 7
 
+  power:
+    name: 空闲性能
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxi-ci-dist
+          path: ${{ runner.temp }}
+      - name: 还原产物
+        run: bash Scripts/ci/unpack.sh
+      - name: 选择 Xcode
+        run: bash Scripts/ci/select-xcode.sh
+      - name: 比较修复前后开销
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash Scripts/ci/idle-power.sh
+      - name: 清理测试进程
+        if: always()
+        run: bash Scripts/ci/cleanup.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proxi-ci-power
+          path: |
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/status-last.json
+
   migration:
     name: 旧配置迁移
     needs: build
@@ -288,7 +320,7 @@ jobs:
   macos:
     # 保留原有检查名字，分支保护和自动合并继续等全部检查成功。
     name: 编译、测试、打包
-    needs: [scripts, build, smoke, migration, update, rename, signing, extension]
+    needs: [scripts, build, smoke, power, migration, update, rename, signing, extension]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

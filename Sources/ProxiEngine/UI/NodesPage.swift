@@ -3,6 +3,7 @@ import SwiftUI
 
 /// 节点与订阅页：订阅地址、节点列表、策略组、代理模式、端口、内核状态和日志。
 struct NodesPage: View {
+    @Environment(\.settingsWindowVisible) private var windowVisible
     @ObservedObject var state: AppState
     @ObservedObject var engine: Engine
     @ObservedObject var navigation: SettingsNavigation
@@ -340,9 +341,11 @@ struct NodesPage: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .task {
+        .task(id: windowVisible) {
+            guard windowVisible else { return }
             while !Task.isCancelled {
-                logText = engine.logTail
+                let text = engine.logTail
+                if text != logText { logText = text }
                 try? await Task.sleep(for: .seconds(2))
             }
         }

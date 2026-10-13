@@ -61,12 +61,22 @@ final class AppNetworkMonitor: ObservableObject {
     }
 
     /// 暂停保留画面；隐藏/关闭取消进程，重新显示时从新基线采样。
-    func stop() {
+    func stop(clearSamples: Bool = false) {
         generation += 1
         worker?.cancel()
         worker = nil
         previous = nil
         isRunning = false
+        if clearSamples {
+            applications = []
+            icons = [:]
+            names = [:]
+            download = 0
+            upload = 0
+            hasSample = false
+            updatedAt = nil
+            error = nil
+        }
     }
 
     func togglePause() {

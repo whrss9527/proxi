@@ -33,7 +33,7 @@ final class NetworkMonitorWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow, closing === window else { return }
-        monitor.stop()
+        monitor.stop(clearSamples: true)
         window = nil
         if !NSApp.windows.contains(where: { $0 !== closing && $0.isVisible && $0.styleMask.contains(.titled) }) {
             NSApp.setActivationPolicy(.accessory)
@@ -45,7 +45,7 @@ final class NetworkMonitorWindowController: NSObject, NSWindowDelegate {
 
     func windowDidChangeOcclusionState(_ notification: Notification) {
         guard let window, notification.object as? NSWindow === window else { return }
-        if window.isVisible && !window.isMiniaturized && !NSApp.isHidden { monitor.start() }
+        if window.isVisible && !window.isMiniaturized && !NSApp.isHidden && window.occlusionState.contains(.visible) { monitor.start() }
         else { monitor.stop() }
     }
 }

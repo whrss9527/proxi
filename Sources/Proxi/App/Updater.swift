@@ -98,6 +98,7 @@ final class Updater: ObservableObject {
                 if enabled() { await self?.check(manual: false) }
             }
         }
+        timer?.tolerance = Self.checkInterval * 0.1
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(5))
             if enabled() { await self?.check(manual: false) }
