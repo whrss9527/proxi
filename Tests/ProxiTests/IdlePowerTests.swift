@@ -79,11 +79,17 @@ final class IdlePowerTests: XCTestCase {
         manager.poll()
         XCTAssertEqual(manager.status?.mixedPort, 7891)
         XCTAssertEqual(changes, 3)
+        file?.coreRunning = false
+        manager.poll()
+        XCTAssertEqual(changes, 4)
+        state.restoreActive = true
+        for _ in 0..<100 { manager.poll() }
+        XCTAssertEqual(changes, 4, "内核尚未就绪时，不因待恢复标记反复通知或写等待日志")
         file = nil
         manager.poll()
         XCTAssertNil(manager.status)
-        XCTAssertEqual(changes, 4)
-        XCTAssertEqual(notifications, 3)
+        XCTAssertEqual(changes, 5)
+        XCTAssertEqual(notifications, 4)
     }
 
     func testHeartbeatFilteringIncludesEveryOperationalField() {

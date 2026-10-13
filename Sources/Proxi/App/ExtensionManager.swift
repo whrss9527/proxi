@@ -498,7 +498,7 @@ final class ExtensionManager: ObservableObject {
                 Log.info(current?.coreRunning == true ? "扩展：代理引擎的内核在运行，端口 \(current?.mixedPort ?? 0)" : "扩展：代理引擎的内核没在运行")
             }
             onChange?()
-        } else if state.restoreActive {
+        } else if state.restoreActive, current?.coreRunning == true {
             // 启动恢复可能正等另一项开关操作结束，心跳仍要重试这项待办，但不发布无变化的状态。
             onChange?()
         }
