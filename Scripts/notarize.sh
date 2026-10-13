@@ -38,6 +38,21 @@ json_field() {
   python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' "$1" "$2" 2>/dev/null || true
 }
 
+# CloudKit 取票据/校验偶尔断开（stapler 68）；只重试该错误，其他失败原样返回。
+stapler_with_retry() {
+  local action="$1" app="$2" attempt result
+  for attempt in 1 2 3; do
+    if xcrun stapler "$action" "$app"; then
+      return 0
+    else
+      result=$?
+    fi
+    [ "$result" -eq 68 ] && [ "$attempt" -lt 3 ] || return "$result"
+    echo "票据 ${action} 网络查询未完成，5 秒后重试（${attempt}/3）"
+    sleep 5
+  done
+}
+
 # 先把所有包都传上去（苹果那边同时处理），再逐个等结果。
 ids=()
 for zip in "$@"; do
@@ -78,8 +93,8 @@ for zip in "$@"; do
   # 包里的程序：Proxi.app，或者可选扩展的 Proxi Engine.app。
   app="$(find "$dir" -maxdepth 1 -name '*.app' | head -1)"
   [ -n "$app" ] || { echo "$name 里没有 .app"; exit 1; }
-  xcrun stapler staple "$app"
-  xcrun stapler validate "$app"
+  stapler_with_retry staple "$app"
+  stapler_with_retry validate "$app"
   # 刚钉上票据时系统可能还认不出来，隔几秒多试几次（次数和间隔可以用 SPCTL_TRIES、SPCTL_INTERVAL 改，CI 自测用）。
   assessed=0
   tries="${SPCTL_TRIES:-6}"
@@ -105,7 +120,7 @@ for zip in "$@"; do
     # 别的原因（签名坏了、证书被吊销、票据核对不过……）照样失败。
     if grep -q "source=Unnotarized Developer ID" <<< "$assessment" \
        && codesign --verify --deep --strict "$app" 2>/dev/null \
-       && xcrun stapler validate "$app" >/dev/null 2>&1; then
+       && stapler_with_retry validate "$app" >/dev/null 2>&1; then
       echo "::warning::${name}：公证已通过、票据已钉上，但这台机器的系统检查仍说没有公证，照常发布"
     else
       codesign --verify --deep --strict --verbose=2 "$app" 2>&1 || true
