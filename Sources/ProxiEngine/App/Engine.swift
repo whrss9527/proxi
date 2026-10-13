@@ -175,6 +175,8 @@ final class Engine: ObservableObject {
     private var logSubscribers = 0
     var isLiveLogStreaming: Bool { logTask != nil }
     private var pendingLog: [LogLine] = []
+    private var nextLogID = 0
+    var bufferedLiveLogCount: Int { pendingLog.count }
     private var logFlushScheduled = false
     /// 「最近的网速」保留的点数（每两秒一个，共两分钟）。
     static let speedHistoryLimit = 60
@@ -1968,7 +1970,6 @@ final class Engine: ObservableObject {
         }
         guard logTask == nil else { return }
         logTask = Task { @MainActor [weak self] in
-            var nextID = 0
             while !Task.isCancelled {
                 guard let self else { return }
                 guard let api = self.api, self.isRunning else {
@@ -1982,8 +1983,7 @@ final class Engine: ObservableObject {
                         guard let data = line.data(using: .utf8),
                               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                               let payload = json["payload"] as? String else { continue }
-                        nextID += 1
-                        self.appendLog(LogLine(id: nextID, date: Date(), level: (json["type"] as? String) ?? "info", text: payload))
+                        self.recordLiveLog(level: (json["type"] as? String) ?? "info", text: payload)
                     }
                 } catch {
                     // 内核重启或者停了：稍后重连。
@@ -1999,12 +1999,18 @@ final class Engine: ObservableObject {
     }
 
     func clearLiveLog() {
+        pendingLog.removeAll(keepingCapacity: true)
         liveLog = []
     }
 
     /// 日志一行行来得很快：先攒着，每 0.3 秒刷新一次界面。
-    private func appendLog(_ line: LogLine) {
-        pendingLog.append(line)
+    func recordLiveLog(level: String, text: String, date: Date = Date()) {
+        nextLogID += 1
+        // 分批丢弃最旧的待刷新日志，限制高流量时的内存，避免逐行删除导致反复搬移数组。
+        if pendingLog.count >= Self.liveLogLimit * 2 {
+            pendingLog.removeFirst(Self.liveLogLimit)
+        }
+        pendingLog.append(LogLine(id: nextLogID, date: date, level: level, text: text))
         guard !logFlushScheduled else { return }
         logFlushScheduled = true
         Task { @MainActor [weak self] in
@@ -2015,8 +2021,9 @@ final class Engine: ObservableObject {
 
     private func flushLog() {
         logFlushScheduled = false
+        guard !pendingLog.isEmpty else { return }
         var lines = liveLog + pendingLog
-        pendingLog = []
+        pendingLog.removeAll(keepingCapacity: true)
         if lines.count > Self.liveLogLimit {
             lines.removeFirst(lines.count - Self.liveLogLimit)
         }

@@ -4,6 +4,42 @@ import XCTest
 
 final class IdlePowerTests: XCTestCase {
     @MainActor
+    func testLogBurstsAreBoundedAndWindowReopeningKeepsUniqueRows() async throws {
+        let engine = Engine()
+        for index in 1...5100 {
+            engine.recordLiveLog(level: "info", text: "line \(index)")
+            XCTAssertLessThanOrEqual(engine.bufferedLiveLogCount, Engine.liveLogLimit * 2)
+        }
+        try await waitForLog { engine.liveLog.last?.text == "line 5100" }
+        XCTAssertEqual(engine.liveLog.count, Engine.liveLogLimit)
+        XCTAssertEqual(engine.liveLog.first?.text, "line 4601")
+        let lastID = try XCTUnwrap(engine.liveLog.last?.id)
+        engine.setSettingsWindowVisible(true)
+        engine.subscribeLiveLog()
+        engine.setSettingsWindowVisible(false)
+        engine.setSettingsWindowVisible(true)
+        defer { engine.unsubscribeLiveLog(); engine.setSettingsWindowVisible(false) }
+        engine.recordLiveLog(level: "info", text: "after reopening")
+        try await waitForLog { engine.liveLog.last?.text == "after reopening" }
+        XCTAssertEqual(engine.liveLog.last?.id, lastID + 1)
+        XCTAssertEqual(Set(engine.liveLog.map(\.id)).count, engine.liveLog.count)
+        engine.recordLiveLog(level: "info", text: "pending")
+        engine.clearLiveLog()
+        XCTAssertEqual(engine.bufferedLiveLogCount, 0)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(engine.liveLog.isEmpty, "清空前已排队的日志不能在下一次刷新时又出现")
+    }
+
+    @MainActor
+    private func waitForLog(_ condition: () -> Bool) async throws {
+        for _ in 0..<100 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("日志批次未刷新")
+    }
+
+    @MainActor
     func testHiddenSpeedHistoryDoesNotRedrawAndOpeningCatchesUp() {
         let engine = Engine()
         engine.setSettingsWindowVisible(true)
