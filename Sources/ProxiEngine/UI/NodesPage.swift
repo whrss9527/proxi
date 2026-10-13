@@ -3,7 +3,6 @@ import SwiftUI
 
 /// 节点与订阅页：订阅地址、节点列表、策略组、代理模式、端口、内核状态和日志。
 struct NodesPage: View {
-    @Environment(\.settingsWindowVisible) private var windowVisible
     @ObservedObject var state: AppState
     @ObservedObject var engine: Engine
     @ObservedObject var navigation: SettingsNavigation
@@ -341,12 +340,22 @@ struct NodesPage: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .task(id: windowVisible) {
-            guard windowVisible else { return }
-            while !Task.isCancelled {
-                let text = engine.logTail
-                if text != logText { logText = text }
-                try? await Task.sleep(for: .seconds(2))
+        .task {
+            // 直接监听发布者：隐藏的 NSHostingView 即使暂不计算 body，也能取消刷新任务。
+            var refresh: Task<Void, Never>?
+            defer { refresh?.cancel() }
+            for await visible in navigation.$windowVisible.removeDuplicates().values {
+                refresh?.cancel()
+                refresh = nil
+                guard visible, !Task.isCancelled else { continue }
+                refresh = Task { @MainActor in
+                    while !Task.isCancelled {
+                        let text = engine.logTail
+                        if text != logText { logText = text }
+                        do { try await Task.sleep(for: .seconds(2)) }
+                        catch { return }
+                    }
+                }
             }
         }
     }

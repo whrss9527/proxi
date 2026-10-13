@@ -1011,7 +1011,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    var isHealthCheckScheduled: Bool { healthTimer != nil }
+    var isHealthCheckScheduled: Bool { healthTimer?.isValid == true }
 
     /// 单独启动健康检查，便于验证关闭代理时没有定时器，重新开启后能恢复。
     func startHealthChecks() {
