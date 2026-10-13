@@ -20,7 +20,7 @@ class ReleaseStateTests(unittest.TestCase):
                 self.assertEqual(state.release_state("example/proxi","v0.17.0"),expected)
 
     def test_only_confirmed_404_can_be_absent(self):
-        with patch.object(state.subprocess,"run",return_value=self.response(404,1)):
+        with patch.object(state.subprocess,"run",side_effect=[self.response(404,1),self.response(body=[])]):
             self.assertEqual(state.release_state("example/proxi","v0.17.0"),"absent")
         with patch.object(state.subprocess,"run",return_value=self.response(404,0)):
             with self.assertRaises(RuntimeError):state.release_state("example/proxi","v0.17.0")
@@ -38,3 +38,29 @@ class ReleaseStateTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):state.release_state("example/proxi","v0.17.0")
         with patch.object(state.subprocess,"run",return_value=self.response(200,45)):
             with self.assertRaises(RuntimeError):state.release_state("example/proxi","v0.17.0")
+
+    def test_tag_endpoint_missing_draft_falls_back_to_release_list(self):
+        for draft, expected in [(True, "draft"), (False, "published")]:
+            with self.subTest(draft=draft), patch.object(state.subprocess, "run", side_effect=[
+                self.response(404, 1), self.response(body=[{"tag_name":"v0.17.0", "draft":draft}])
+            ]) as api:
+                self.assertEqual(state.release_state("example/proxi", "v0.17.0"), expected)
+                self.assertIn("releases?per_page=100&page=1", api.call_args.args[0][-1])
+
+    def test_draft_can_be_found_on_later_pages(self):
+        first = [{"tag_name":f"v1.0.{i}", "draft":False} for i in range(100)]
+        with patch.object(state.subprocess, "run", side_effect=[
+            self.response(404, 1), self.response(body=first),
+            self.response(body=[{"tag_name":"v0.17.0", "draft":True}])
+        ]) as api:
+            self.assertEqual(state.release_state("example/proxi", "v0.17.0"), "draft")
+            self.assertIn("page=2", api.call_args.args[0][-1])
+
+    def test_failed_or_unknown_release_list_cannot_be_absent(self):
+        responses = [self.response(403, 1), self.response(404, 1), self.response(503, 1),
+                     self.response(body={}), self.response(body=[{}]),
+                     self.response(body=[{"tag_name":"v0.17.0", "draft":"true"}]),
+                     self.response(body=[{"tag_name":"v0.17.0", "draft":True}] * 2)]
+        for response in responses:
+            with self.subTest(response=response), patch.object(state.subprocess, "run", side_effect=[self.response(404,1), response]):
+                with self.assertRaises(RuntimeError):state.release_state("example/proxi", "v0.17.0")
