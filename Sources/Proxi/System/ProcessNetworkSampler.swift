@@ -41,7 +41,8 @@ enum ProcessNetworkSampler {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
         guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
-        var path = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
+        // libproc 的 PROC_PIDPATHINFO_MAXSIZE 是带 C 类型转换的宏，Swift 无法导入；其值为 4 * MAXPATHLEN。
+        var path = [CChar](repeating: 0, count: 4096)
         let count = UInt32(path.count)
         let length = path.withUnsafeMutableBytes { buffer -> Int32 in
             guard let address = buffer.baseAddress else { return 0 }
