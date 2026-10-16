@@ -24,7 +24,10 @@ elif tool=="gh":
         if os.environ["FAKE_API_ERROR"]=="1" and queries==1:
             print('HTTP/2.0 503 Service Unavailable\n\n{}');sys.exit(1)
         public=os.environ["FAKE_PUBLIC"]=="1" or (os.environ["FAKE_SECOND_PUBLIC"]=="1" and queries>=2)
-        print('HTTP/2.0 200 OK\n\n'+json.dumps({"tag_name":"v0.17.0","draft":not public}))
+        value={"tag_name":"v0.17.0","draft":not public}
+        if os.environ["FAKE_TAG_MISSES_DRAFT"]=="1" and "/releases/tags/" in args[-1]:
+            print('HTTP/2.0 404 Not Found\n\n{}');sys.exit(1)
+        print('HTTP/2.0 200 OK\n\n'+json.dumps([value] if "/releases?" in args[-1] else value))
     elif args[:2]==["release","download"]:
         target=Path(args[args.index("--dir")+1])
         source=Path(os.environ["FAKE_CANDIDATE"])
@@ -36,7 +39,7 @@ elif tool=="gh":
 '''
 
 class PublishReleaseTests(unittest.TestCase):
-    def run_publish(self,public=False,corrupt=False,api_error=False,second_public=False,extra=False):
+    def run_publish(self,public=False,corrupt=False,api_error=False,second_public=False,extra=False,tag_misses_draft=False):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);candidate=root/"candidate";candidate.mkdir()
             for name in integrity.archive_names("v0.17.0"):
@@ -54,6 +57,7 @@ class PublishReleaseTests(unittest.TestCase):
                      FAKE_PUBLIC="1" if public else "0",FAKE_CORRUPT="1" if corrupt else "0",
                      FAKE_API_ERROR="1" if api_error else "0",FAKE_SECOND_PUBLIC="1" if second_public else "0",
                      FAKE_EXTRA="1" if extra else "0",
+                     FAKE_TAG_MISSES_DRAFT="1" if tag_misses_draft else "0",
                      FAKE_CANDIDATE=str(candidate),RUNNER_TEMP=str(root),TAG="v0.17.0",RELEASE_SOURCE_SHA="a"*40,
                      GITHUB_RUN_ID="123",GITHUB_RUN_ATTEMPT="1",GITHUB_REPOSITORY="example/proxi")
             script=Path(__file__).with_name("publish-release.sh").resolve()
@@ -67,6 +71,13 @@ class PublishReleaseTests(unittest.TestCase):
         download=next(i for i,c in enumerate(calls) if c[:3]==["gh","release","download"])
         publish=next(i for i,c in enumerate(calls) if c[:3]==["gh","release","edit"])
         self.assertLess(upload,download);self.assertLess(download,publish)
+
+    def test_draft_missing_from_tag_endpoint_can_still_be_published(self):
+        result,calls=self.run_publish(tag_misses_draft=True)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertTrue(any(c[:3]==["gh","release","upload"] for c in calls))
+        self.assertTrue(any(c[:3]==["gh","release","edit"] for c in calls))
+        self.assertFalse(any(c[:3]==["gh","release","create"] for c in calls), "真实草稿存在时不再创建一个")
 
     def test_existing_public_release_cannot_receive_any_mutation(self):
         result,calls=self.run_publish(public=True)
