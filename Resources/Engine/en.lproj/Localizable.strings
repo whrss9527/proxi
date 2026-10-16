@@ -918,8 +918,6 @@
 "备用 DNS 经「节点」查询" = "Query Fallback DNS Through “Node”";
 "解析 DNS 服务器用的 IP" = "IPs for Resolving DNS Servers";
 "按域名指定 DNS" = "DNS per Domain";
-"加" = "Add";
-"公司内网、家里的 NAS 这类域名交给指定的 DNS；+.example.com 连同子域名。" = "Send domains such as a company intranet or a home NAS to a specific DNS; +.example.com includes subdomains.";
 "恢复默认" = "Restore Defaults";
 "域名，比如 nas.lan、*.test.com" = "Domain, e.g. nas.lan, *.test.com";
 "IP（多个用逗号分开）或者另一个域名" = "IP (separate several with commas) or another domain";
@@ -1395,3 +1393,6 @@
 "预览导入会改动什么，不会真的改。内容可以是代理引擎的配置描述（JSON）、mihomo 的 YAML、其他常见格式的配置、节点链接或规则列表；也可以给网址。" = "Preview what an import would change without changing anything. The content can be an engine config description (JSON), mihomo YAML, configs in other common formats, node links or rule lists; a URL also works.";
 "（在 Proxi 里开启「代理引擎」这个配置后生效）" = " (takes effect when the “Proxy Engine” profile is turned on in Proxi)";
 "，本机端口 %@" = ", local port %@";
+"域名「%@」已经指定了 DNS，请编辑已有条目" = "Domain “%@” already has a DNS mapping. Edit the existing entry.";
+"保存修改" = "Save Changes";
+"例如 example.com → 223.5.5.5：向这个 DNS 服务器查询该域名，不是固定 IP。example.com 只匹配自身，+.example.com 包含子域名；不改变分流规则，Hosts 中的固定地址优先。添加或编辑后，点「应用」保存。" = "For example, example.com → 223.5.5.5 queries that DNS server; it does not assign a fixed IP. example.com matches only itself; +.example.com includes subdomains. Routing rules stay the same, and fixed addresses in Hosts take priority. Click Apply after adding or editing.";

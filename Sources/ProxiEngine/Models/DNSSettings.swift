@@ -47,9 +47,22 @@ struct DNSSettings: Codable, Equatable {
             let host = DNSSettings.plainHost(server)
             if !IPPrefix.isIPv4Address(host) && !IPPrefix.isIPv6Address(host) { return L("「%@」要填 IP 地址", server) }
         }
+        var domains = Set<String>()
         for policy in policies {
             if let problem = policy.validate() { return problem }
+            if !domains.insert(policy.domain.lowercased()).inserted { return L("域名「%@」已经指定了 DNS，请编辑已有条目", policy.domain) }
         }
+        return nil
+    }
+
+    /// 按稳定 ID 编辑，域名不能重复，避免生成同名的 YAML 键。
+    mutating func savePolicy(_ policy: DNSPolicy) -> String? {
+        if let problem = policy.validate() { return problem }
+        if policies.contains(where: { $0.id != policy.id && $0.domain.lowercased() == policy.domain.lowercased() }) {
+            return L("域名「%@」已经指定了 DNS，请编辑已有条目", policy.domain)
+        }
+        if let index = policies.firstIndex(where: { $0.id == policy.id }) { policies[index] = policy }
+        else { policies.append(policy) }
         return nil
     }
 
@@ -105,8 +118,8 @@ struct DNSPolicy: Codable, Equatable, Identifiable, Hashable {
     var servers: [String] = []
 
     init(domain: String, servers: [String]) {
-        self.domain = domain.trimmingCharacters(in: .whitespaces).lowercased()
-        self.servers = servers
+        self.domain = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.servers = servers.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -116,8 +129,8 @@ struct DNSPolicy: Codable, Equatable, Identifiable, Hashable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        domain = try container.decodeIfPresent(String.self, forKey: .domain) ?? ""
-        servers = try container.decodeIfPresent([String].self, forKey: .servers) ?? []
+        domain = (try container.decodeIfPresent(String.self, forKey: .domain) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        servers = (try container.decodeIfPresent([String].self, forKey: .servers) ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
     func validate() -> String? {

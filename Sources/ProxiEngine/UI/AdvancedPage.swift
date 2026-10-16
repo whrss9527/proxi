@@ -130,7 +130,7 @@ struct DNSSection: View {
     @State private var newDomain = ""
     @State private var newServers = ""
     @State private var problem: String?
-    @State private var loaded = false
+    @State private var editingPolicyID: UUID?
 
     var body: some View {
         Section("DNS") {
@@ -154,33 +154,34 @@ struct DNSSection: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                             Spacer()
+                            Button(L("编辑")) {
+                                editingPolicyID = policy.id
+                                newDomain = policy.domain
+                                newServers = policy.servers.joined(separator: ", ")
+                                problem = nil
+                            }
                             Button {
                                 policies.removeAll { $0.id == policy.id }
+                                if editingPolicyID == policy.id { resetEditor() }
                             } label: {
                                 Image(systemName: "minus.circle")
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
+                            .help(L("删除"))
                         }
                     }
                     HStack {
-                        TextField("", text: $newDomain, prompt: Text("+.corp.example.com"))
+                        TextField(L("域名"), text: $newDomain, prompt: Text("example.com"))
                             .frame(width: 180)
-                        TextField("", text: $newServers, prompt: Text("10.0.0.53"))
-                        Button(L("加")) {
-                            let policy = DNSPolicy(domain: newDomain, servers: DNSSettings.parseList(newServers))
-                            if let issue = policy.validate() {
-                                problem = issue
-                            } else {
-                                policies.append(policy)
-                                newDomain = ""
-                                newServers = ""
-                                problem = nil
-                            }
+                        TextField(L("DNS 服务器"), text: $newServers, prompt: Text("223.5.5.5"))
+                        Button(editingPolicyID == nil ? L("添加") : L("保存修改")) { savePolicy() }
+                            .disabled(newDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || DNSSettings.parseList(newServers).isEmpty)
+                        if hasUnfinishedPolicy {
+                            Button(L("取消")) { resetEditor() }
                         }
-                        .disabled(newDomain.isEmpty || newServers.isEmpty)
                     }
-                    Text(L("公司内网、家里的 NAS 这类域名交给指定的 DNS；+.example.com 连同子域名。"))
+                    Text(L("例如 example.com → 223.5.5.5：向这个 DNS 服务器查询该域名，不是固定 IP。example.com 只匹配自身，+.example.com 包含子域名；不改变分流规则，Hosts 中的固定地址优先。添加或编辑后，点「应用」保存。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -203,11 +204,29 @@ struct DNSSection: View {
                 Button(L("应用")) {
                     problem = engine.setDNS(draft)
                 }
-                .disabled(draft == current)
+                .disabled(draft == current || (enabled && hasUnfinishedPolicy))
             }
         }
         .onAppear { load(current) }
         .onChange(of: current) { _, value in load(value) }
+    }
+
+    private var hasUnfinishedPolicy: Bool { editingPolicyID != nil || !newDomain.isEmpty || !newServers.isEmpty }
+
+    private func savePolicy() {
+        var policy = DNSPolicy(domain: newDomain, servers: DNSSettings.parseList(newServers))
+        if let editingPolicyID { policy.id = editingPolicyID }
+        var dns = draft
+        if let issue = dns.savePolicy(policy) { problem = issue; return }
+        policies = dns.policies
+        resetEditor()
+    }
+
+    private func resetEditor() {
+        editingPolicyID = nil
+        newDomain = ""
+        newServers = ""
+        problem = nil
     }
 
     private func field(_ title: String, text: Binding<String>, prompt: String) -> some View {
@@ -237,6 +256,7 @@ struct DNSSection: View {
         fallbackViaProxy = dns.fallbackViaProxy
         bootstrap = dns.bootstrap.joined(separator: ", ")
         policies = dns.policies
+        resetEditor()
     }
 }
 
