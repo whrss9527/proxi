@@ -980,7 +980,7 @@ final class AppState: ObservableObject {
     }
 
     /// 来自 iCloud 的配置：整个换掉。正在使用的配置如果改了地址就重新应用，被删了就关闭代理。
-    private func applyRemoteConfig(_ remote: AppConfig) {
+    func applyRemoteConfig(_ remote: AppConfig) {
         let active: Profile? = {
             if case .on(let profile) = status { return profile }
             return nil
