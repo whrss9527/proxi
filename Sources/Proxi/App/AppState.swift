@@ -735,7 +735,8 @@ final class AppState: ObservableObject {
                 if !latest.appliesSame(as: completed) || passwordChanged {
                     turnOn(latest, askForPassword: allowUI, replacing: completed)
                 }
-            } else {
+            } else if !appliedTargets.isEmpty || ProxyTarget.allCases.contains(where: { hasOriginal($0) }) {
+                // 原值采集全失败时从未接管设置，不能用旧配置的范围回退清理。
                 turnOff(clearing: completed)
             }
         }

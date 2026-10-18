@@ -17,6 +17,8 @@ final class ConfigurationTransactionTests: XCTestCase {
         private var holdNext = false
         private var entered: XCTestExpectation?
         var holdRestore = false
+        var holdCapture = false
+        var failCapture = Set<ProxyTarget>()
         var failWrite = Set<ProxyTarget>()
         var failRestore = Set<ProxyTarget>()
 
@@ -98,7 +100,11 @@ final class ConfigurationTransactionTests: XCTestCase {
         func clearGit() async throws { try restore(.git, values: [:]) }
         func setNpm(proxyURL: String, noProxy: String) throws { try write(.npm, url: proxyURL) }
         func clearNpm() throws { try restore(.npm, values: [:]) }
-        func captureProxySettings(for target: ProxyTarget) async throws -> ProxyScopeSnapshot.Values { capture(target) }
+        func captureProxySettings(for target: ProxyTarget) async throws -> ProxyScopeSnapshot.Values {
+            if holdCapture { await pause(restoring: false) }
+            if failCapture.contains(target) { throw RestorationError.unavailable }
+            return capture(target)
+        }
         func restoreProxySettings(_ values: ProxyScopeSnapshot.Values, for target: ProxyTarget) async throws {
             await pause(restoring: true)
             try restore(target, values: values)
@@ -459,6 +465,35 @@ final class ConfigurationTransactionTests: XCTestCase {
         XCTAssertNil(resumed.persisted.pendingCleanup)
         XCTAssertEqual(backend.values(.environment), original)
         XCTAssertEqual(backend.urls(.environment), ["http://a.corp.example:3128"])
+    }
+
+
+    func testDeletionAfterAllCapturesFailNeverClearsUntouchedSettings() async throws {
+        let backend = Backend()
+        let environment = backend.values(.environment)
+        let git = backend.values(.git)
+        backend.holdCapture = true
+        backend.failCapture = [.environment, .git]
+        let state = makeState(backend)
+        let profile = try XCTUnwrap(state.selectedProfile)
+        let entered = expectation(description: "原值采集在失败前挂起")
+        backend.arm(entered)
+        state.turnOn(profile, askForPassword: false)
+        await fulfillment(of: [entered], timeout: 3)
+        state.remove(profile)
+        let done = completion(state)
+        backend.release()
+        await fulfillment(of: [done], timeout: 3)
+        XCTAssertEqual(backend.values(.environment), environment)
+        XCTAssertEqual(backend.values(.git), git)
+        XCTAssertTrue(backend.urls(.environment).isEmpty)
+        XCTAssertTrue(backend.urls(.git).isEmpty)
+        XCTAssertEqual(backend.restoreCount(.environment), 0)
+        XCTAssertEqual(backend.restoreCount(.git), 0)
+        XCTAssertEqual(state.appliedTargets, [])
+        XCTAssertNil(state.persisted.originalScopes.environment)
+        XCTAssertNil(state.persisted.originalScopes.git)
+        XCTAssertNotNil(state.lastError)
     }
 
 }
