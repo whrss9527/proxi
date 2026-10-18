@@ -293,15 +293,16 @@ final class ConfigurationTransactionTests: XCTestCase {
 
     func testCancelledPasswordPromptDiscardsDeferredEditsAndAllowsExplicitRetry() async throws {
         let backend = Backend()
-        var state: AppState!
+        weak var promptState: AppState?
         var prompts = 0
-        state = makeState(backend, passwordAccess: .init(read: { _, _ in nil }, prompt: { profile in
+        let state = makeState(backend, passwordAccess: .init(read: { _, _ in nil }, prompt: { profile in
             prompts += 1
             var edited = profile
             edited.host = "b.corp.example"
-            state.update(edited)
+            promptState?.update(edited)
             return prompts == 1 ? nil : "fixture-password"
         }, save: { _, _ in }))
+        promptState = state
         var profile = try XCTUnwrap(state.selectedProfile)
         profile.username = "fixture-user"
         profile.hasPassword = true
@@ -338,4 +339,126 @@ final class ConfigurationTransactionTests: XCTestCase {
         XCTAssertEqual(backend.urls(.environment).last, "http://b.corp.example:3128")
         XCTAssertEqual(backend.captureCount(.environment), 1)
     }
+
+    func testPasswordOnlyChangeIsReappliedWithoutAllowingInteractiveCLI() async throws {
+        let backend = Backend()
+        var reads = 0
+        var allowsUI: [Bool] = []
+        let state = makeState(backend, passwordAccess: .init(read: { _, allowUI in
+            reads += 1
+            allowsUI.append(allowUI)
+            return reads == 1 ? "first-fixture" : "latest-fixture"
+        }, prompt: { _ in XCTFail("非交互开启不能弹密码框"); return nil }, save: { _, _ in }))
+        var profile = try XCTUnwrap(state.selectedProfile)
+        profile.username = "fixture-user"
+        profile.hasPassword = true
+        state.update(profile)
+        _ = try await startHeld(state, backend)
+        state.update(profile, passwordChanged: true)
+        let done = completion(state)
+        backend.release()
+        await fulfillment(of: [done], timeout: 3)
+        XCTAssertEqual(allowsUI, [false, false])
+        XCTAssertEqual(backend.urls(.environment), ["http://fixture-user:first-fixture@a.corp.example:3128", "http://fixture-user:latest-fixture@a.corp.example:3128"])
+    }
+
+    func testNewRequestFromCompletionKeepsItsOwnDeferredConfiguration() async throws {
+        let backend = Backend()
+        let state = makeState(backend)
+        let profile = try await startHeld(state, backend)
+        var other = profile
+        other.id = UUID()
+        other.host = "other.corp.example"
+        state.addProfile(other)
+        let done = expectation(description: "回调中的新请求和新配置完成")
+        done.assertForOverFulfill = false
+        var requested = false
+        state.onStatusChanged = { [weak state] in
+            guard let state, !state.busy else { return }
+            if !requested {
+                requested = true
+                state.turnOn(other, askForPassword: false)
+                other.host = "latest.corp.example"
+                state.update(other)
+            } else {
+                done.fulfill()
+            }
+        }
+        backend.release()
+        await fulfillment(of: [done], timeout: 3)
+        XCTAssertEqual(backend.urls(.environment), ["http://a.corp.example:3128", "http://other.corp.example:3128", "http://latest.corp.example:3128"])
+        XCTAssertEqual(state.persisted.lastProfileID, other.id)
+    }
+
+    func testRelaunchDoesNotStartDeferredReapplication() async throws {
+        let backend = Backend()
+        let state = makeState(backend)
+        var profile = try await startHeld(state, backend)
+        profile.host = "b.corp.example"
+        state.update(profile)
+        state.relaunching = true
+        state.handleExit()
+        let done = completion(state)
+        backend.release()
+        await fulfillment(of: [done], timeout: 3)
+        XCTAssertEqual(backend.urls(.environment), ["http://a.corp.example:3128"])
+    }
+
+
+    func testEditsWhileReapplyingAnActiveProfileUseLatestWithoutRecapturing() async throws {
+        let backend = Backend()
+        let original = backend.values(.git)
+        let state = makeState(backend)
+        var profile = try await startHeld(state, backend)
+        let first = completion(state)
+        backend.release()
+        await fulfillment(of: [first], timeout: 3)
+        let entered = expectation(description: "已开启配置的重新应用挂起")
+        backend.arm(entered)
+        profile.host = "b.corp.example"
+        state.update(profile)
+        await fulfillment(of: [entered], timeout: 3)
+        profile.host = "c.corp.example"
+        state.update(profile)
+        profile.host = "d.corp.example"
+        state.update(profile)
+        let done = completion(state)
+        backend.release()
+        await fulfillment(of: [done], timeout: 3)
+        XCTAssertEqual(backend.urls(.git), ["http://a.corp.example:3128", "http://b.corp.example:3128", "http://d.corp.example:3128"])
+        XCTAssertEqual(backend.captureCount(.git), 1)
+        let off = completion(state)
+        state.turnOff()
+        await fulfillment(of: [off], timeout: 3)
+        XCTAssertEqual(backend.values(.git), original)
+    }
+
+    func testEditsDuringRestartCleanupDoNotReenableProxy() async throws {
+        let backend = Backend()
+        let original = backend.values(.environment)
+        let state = makeState(backend)
+        let profile = try await startHeld(state, backend)
+        let first = completion(state)
+        backend.release()
+        await fulfillment(of: [first], timeout: 3)
+        var persisted = state.persisted
+        persisted.pendingCleanup = PendingCleanup(profileName: profile.name, targets: [.environment, .git])
+        let resumed = AppState(config: state.config, persisted: persisted, backend: backend, persists: false,
+                               operationLog: { _, _ in })
+        let entered = expectation(description: "重启后的恢复清理挂起")
+        backend.arm(entered, restoring: true)
+        let cleanup = Task { await resumed.resumePendingCleanup() }
+        await fulfillment(of: [entered], timeout: 3)
+        var remote = resumed.config
+        remote.profiles[0].host = "remote.corp.example"
+        resumed.applyRemoteConfig(remote)
+        backend.release()
+        await cleanup.value
+        XCTAssertFalse(resumed.busy)
+        XCTAssertFalse(resumed.persisted.enabledByUs)
+        XCTAssertNil(resumed.persisted.pendingCleanup)
+        XCTAssertEqual(backend.values(.environment), original)
+        XCTAssertEqual(backend.urls(.environment), ["http://a.corp.example:3128"])
+    }
+
 }
