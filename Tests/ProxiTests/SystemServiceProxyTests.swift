@@ -432,4 +432,29 @@ final class SystemServiceProxyTests: XCTestCase {
         XCTAssertFalse(state.persisted.enabledByUs)
     }
 
+
+    @MainActor
+    func testPendingStartupCleanupDoesNotApplyNewServicesBeforeCleanupStarts() async throws {
+        let original = try service("wifi", host: "original.corp.example", enabled: true)
+        let owned = try service("wifi", host: "debug.corp.example", enabled: true)
+        let ethernet = try service("ethernet", host: "untouched.corp.example", enabled: true)
+        let backend = Backend([owned, ethernet])
+        var persisted = PersistedState()
+        persisted.enabledByUs = true
+        persisted.appliedTargets = [.system]
+        persisted.originalSystemServices = ["wifi": backup(original)]
+        persisted.pendingCleanup = PendingCleanup(profileName: "开发代理", targets: [.system])
+        let state = state(backend, persisted: persisted)
+        state.networkServicesChanged()
+        try await wait(state)
+        XCTAssertTrue(backend.written.isEmpty)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertNotNil(state.persisted.pendingCleanup)
+        await state.resumePendingCleanup()
+        XCTAssertEqual(backend.value("wifi"), original)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertNil(state.persisted.pendingCleanup)
+        XCTAssertFalse(state.persisted.enabledByUs)
+    }
+
 }

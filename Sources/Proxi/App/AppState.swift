@@ -142,6 +142,7 @@ final class AppState: ObservableObject {
         self.legacy = legacy
         self.config = config
         self.persisted = persisted
+        self.acceptsNewSystemServices = persisted.pendingCleanup == nil
         self.backend = backend
         self.persists = persists
         self.reachability = reachability
