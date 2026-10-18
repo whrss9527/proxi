@@ -92,6 +92,8 @@ final class AppState: ObservableObject {
     private var watcher: SystemWatcher?
     private var restorationSecretsToDelete = Set<UUID>()
     private var networkServicesDirty = false
+    /// 显式关闭后即使清理失败，也不再向新网卡扩展代理；下次明确开启才恢复。
+    private var acceptsNewSystemServices = true
     /// 已接受事务使用的配置快照。关闭/清理期间为 nil，不能从变化中的 status 推断。
     private var transactionProfile: Profile?
     private var transactionAllowsPasswordUI = false
@@ -587,6 +589,7 @@ final class AppState: ObservableObject {
                 return
             }
         }
+        acceptsNewSystemServices = true
         lastError = nil
         targetFailures = [:]
         if !backend.supportsServiceSnapshots && (persisted.original == nil || (previous == nil && appliedTargets.isEmpty)) {
@@ -631,6 +634,7 @@ final class AppState: ObservableObject {
     func turnOff(clearing removed: Profile? = nil) {
         guard !busy else { return }
         busy = true
+        acceptsNewSystemServices = false
         transactionProfile = nil
         configurationDirty = false
         transactionPasswordChanged = false
@@ -675,6 +679,7 @@ final class AppState: ObservableObject {
     func clearAllProxySettings() async {
         guard !busy else { return }
         busy = true
+        acceptsNewSystemServices = false
         transactionProfile = nil
         configurationDirty = false
         transactionPasswordChanged = false
@@ -726,6 +731,8 @@ final class AppState: ObservableObject {
         let needsReconcile = configurationDirty
         let passwordChanged = transactionPasswordChanged
         let allowUI = transactionAllowsPasswordUI
+        // 关闭失败仍可能留有已接管范围，也不能把关闭期间的网络事件当作重新开启意图。
+        if completed == nil { networkServicesDirty = false }
         transactionProfile = nil
         configurationDirty = false
         transactionPasswordChanged = false
@@ -959,7 +966,7 @@ final class AppState: ObservableObject {
 
     /// 变化发生在代理操作期间时延后一次处理，只给本次接管中新增的服务补写。
     func networkServicesChanged() {
-        guard !exiting, backend.supportsServiceSnapshots else { networkServicesDirty = false; return }
+        guard !exiting, acceptsNewSystemServices, backend.supportsServiceSnapshots else { networkServicesDirty = false; return }
         if busy { networkServicesDirty = true; return }
         guard persisted.enabledByUs, appliedTargets.contains(.system),
               let profile = selectedProfile, profile.targets.contains(.system) else {
@@ -1230,6 +1237,7 @@ final class AppState: ObservableObject {
     func resumePendingCleanup() async {
         guard let pending = persisted.pendingCleanup, !busy else { return }
         busy = true
+        acceptsNewSystemServices = false
         transactionProfile = nil
         configurationDirty = false
         transactionPasswordChanged = false

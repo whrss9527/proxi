@@ -11,6 +11,7 @@ final class SystemServiceProxyTests: XCTestCase {
         var failRestore = Set<String>()
         var delay = false
         var applyGate: (@Sendable () async -> Void)?
+        var restoreGate: (@Sendable () async -> Void)?
         private(set) var written: [String] = []
         private(set) var restored: [String] = []
 
@@ -49,6 +50,7 @@ final class SystemServiceProxyTests: XCTestCase {
             return result
         }
         func restoreSystemServices(_ settings: [SystemServiceSettings]) async -> SystemServiceResult {
+            if let restoreGate { await restoreGate() }
             var result = SystemServiceResult()
             for item in settings {
                 if failRestore.contains(item.id) { result.failures[item.name] = "restore failed" }
@@ -389,6 +391,45 @@ final class SystemServiceProxyTests: XCTestCase {
         XCTAssertNil(state.persisted.originalSystemServices)
         XCTAssertNil(state.persisted.pendingCleanup)
         XCTAssertEqual(state.appliedTargets, [.git])
+    }
+
+
+    @MainActor
+    func testNetworkChangeDuringFailedTurnOffNeverAppliesEditedProfileToNewService() async throws {
+        let wifi = try service("wifi")
+        let ethernet = try service("ethernet", host: "untouched.corp.example", enabled: true)
+        let backend = Backend([wifi])
+        let state = state(backend)
+        var profile = try XCTUnwrap(state.selectedProfile)
+        state.turnOn(profile, askForPassword: false)
+        try await wait(state)
+        backend.failRestore = ["wifi"]
+        let entered = expectation(description: "关闭恢复在失败前挂起")
+        let gate = WriteGate(entered)
+        backend.restoreGate = { await gate.wait() }
+        state.turnOff()
+        await fulfillment(of: [entered], timeout: 3)
+        profile.host = "edited.corp.example"
+        state.update(profile)
+        backend.add(ethernet)
+        state.networkServicesChanged()
+        await gate.release()
+        try await wait(state)
+        XCTAssertEqual(backend.written, ["wifi"])
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertNotNil(state.persisted.originalSystemServices?["wifi"])
+        XCTAssertNotNil(state.lastError)
+        // 关闭失败后的另一个独立网络通知同样不能重新扩展代理。
+        state.networkServicesChanged()
+        try await wait(state)
+        XCTAssertEqual(backend.written, ["wifi"])
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        backend.failRestore = []
+        state.turnOff()
+        try await wait(state)
+        XCTAssertEqual(backend.value("wifi"), wifi)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertFalse(state.persisted.enabledByUs)
     }
 
 }
