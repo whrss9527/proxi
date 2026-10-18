@@ -20,14 +20,31 @@ if tool=="git":
     elif args[0]=="ls-remote":sys.exit(2)
 elif tool=="gh":
     if args[0]=="api":
-        queries=sum(c[:2]==["gh","api"] for c in state["calls"])
+        if "--method" in args and args[args.index("--method")+1]=="POST":
+            value=json.loads(Path(args[args.index("--input")+1]).read_text())
+            value["id"]=411323629
+            if os.environ["FAKE_CREATED_PUBLIC"]=="1":value["draft"]=False
+            state["created"]=True;state_path.write_text(json.dumps(state))
+            print(json.dumps(value));sys.exit(0)
+        queries=sum(c[:2]==["gh","api"] and "--include" in c for c in state["calls"])
         if os.environ["FAKE_API_ERROR"]=="1" and queries==1:
             print('HTTP/2.0 503 Service Unavailable\n\n{}');sys.exit(1)
-        public=os.environ["FAKE_PUBLIC"]=="1" or (os.environ["FAKE_SECOND_PUBLIC"]=="1" and queries>=2)
-        value={"tag_name":"v0.17.0","draft":not public}
-        if os.environ["FAKE_TAG_MISSES_DRAFT"]=="1" and "/releases/tags/" in args[-1]:
+        public=os.environ["FAKE_PUBLIC"]=="1" or state.get("published",False) or (os.environ["FAKE_SECOND_PUBLIC"]=="1" and queries>=2) or (os.environ["FAKE_PUBLIC_AFTER_UPLOAD"]=="1" and state.get("uploaded",False))
+        value={"id":411323629,"tag_name":"v0.17.0","draft":not public}
+        if os.environ["FAKE_ID_MISMATCH"]=="1" and args[-1].endswith("/411323629"):value["id"]=411323630
+        if (os.environ["FAKE_TAG_MISSES_DRAFT"]=="1" or os.environ["FAKE_DELAYED_VISIBILITY"]=="1") and "/releases/tags/" in args[-1]:
             print('HTTP/2.0 404 Not Found\n\n{}');sys.exit(1)
-        print('HTTP/2.0 200 OK\n\n'+json.dumps([value] if "/releases?" in args[-1] else value))
+        if "/releases?" in args[-1]:value=[] if os.environ["FAKE_DELAYED_VISIBILITY"]=="1" else [value]
+        print('HTTP/2.0 200 OK\n\n'+json.dumps(value))
+    elif args[:2]==["release","view"]:
+        release_id=411323630 if os.environ["FAKE_CLI_ID_MISMATCH"]=="1" else 411323629
+        print(json.dumps({"apiUrl":f"https://api.github.com/repos/example/proxi/releases/{release_id}","tagName":"v0.17.0","isDraft":not state.get("published",False)}))
+    elif args[:2]==["release","create"]:
+        state["created"]=True;state_path.write_text(json.dumps(state))
+    elif args[:2]==["release","upload"]:
+        state["uploaded"]=True;state_path.write_text(json.dumps(state))
+    elif args[:2]==["release","edit"]:
+        state["published"]=True;state_path.write_text(json.dumps(state))
     elif args[:2]==["release","download"]:
         target=Path(args[args.index("--dir")+1])
         source=Path(os.environ["FAKE_CANDIDATE"])
@@ -39,7 +56,7 @@ elif tool=="gh":
 '''
 
 class PublishReleaseTests(unittest.TestCase):
-    def run_publish(self,public=False,corrupt=False,api_error=False,second_public=False,extra=False,tag_misses_draft=False):
+    def run_publish(self,public=False,corrupt=False,api_error=False,second_public=False,extra=False,tag_misses_draft=False,delayed_visibility=False,created_public=False,public_after_upload=False,id_mismatch=False,cli_id_mismatch=False):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);candidate=root/"candidate";candidate.mkdir()
             for name in integrity.archive_names("v0.17.0"):
@@ -58,6 +75,11 @@ class PublishReleaseTests(unittest.TestCase):
                      FAKE_API_ERROR="1" if api_error else "0",FAKE_SECOND_PUBLIC="1" if second_public else "0",
                      FAKE_EXTRA="1" if extra else "0",
                      FAKE_TAG_MISSES_DRAFT="1" if tag_misses_draft else "0",
+                     FAKE_DELAYED_VISIBILITY="1" if delayed_visibility else "0",
+                     FAKE_CREATED_PUBLIC="1" if created_public else "0",
+                     FAKE_PUBLIC_AFTER_UPLOAD="1" if public_after_upload else "0",
+                     FAKE_ID_MISMATCH="1" if id_mismatch else "0",
+                     FAKE_CLI_ID_MISMATCH="1" if cli_id_mismatch else "0",
                      FAKE_CANDIDATE=str(candidate),RUNNER_TEMP=str(root),TAG="v0.17.0",RELEASE_SOURCE_SHA="a"*40,
                      GITHUB_RUN_ID="123",GITHUB_RUN_ATTEMPT="1",GITHUB_REPOSITORY="example/proxi")
             script=Path(__file__).with_name("publish-release.sh").resolve()
@@ -105,4 +127,42 @@ class PublishReleaseTests(unittest.TestCase):
     def test_unexpected_remote_attachment_cannot_be_made_public(self):
         result,calls=self.run_publish(extra=True)
         self.assertNotEqual(result.returncode,0)
+        self.assertFalse(any(c[:3]==["gh","release","edit"] for c in calls))
+
+
+    def test_created_draft_is_bound_by_id_when_indexes_still_miss_it(self):
+        result,calls=self.run_publish(delayed_visibility=True)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        creation=next(i for i,c in enumerate(calls) if c[:2]==["gh","api"] and "POST" in c)
+        reads=[c for c in calls[creation+1:] if c[:2]==["gh","api"]]
+        self.assertGreaterEqual(len(reads),3)
+        self.assertTrue(all(c[-1].endswith("/releases/411323629") for c in reads))
+
+    def test_known_draft_state_is_pinned_to_its_id(self):
+        result,calls=self.run_publish(tag_misses_draft=True)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertTrue(any(c[:2]==["gh","api"] and c[-1].endswith("/releases/411323629") for c in calls))
+        self.assertFalse(any(c[:2]==["gh","api"] and "POST" in c for c in calls))
+
+    def test_created_public_response_cannot_authorize_upload(self):
+        result,calls=self.run_publish(delayed_visibility=True,created_public=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse(any(c[:3]==["gh","release","upload"] for c in calls))
+
+    def test_id_changed_before_upload_stops_publication(self):
+        result,calls=self.run_publish(id_mismatch=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse(any(c[:3]==["gh","release","upload"] for c in calls))
+
+    def test_publication_after_upload_is_detected_before_edit(self):
+        result,calls=self.run_publish(public_after_upload=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertTrue(any(c[:3]==["gh","release","upload"] for c in calls))
+        self.assertFalse(any(c[:3]==["gh","release","edit"] for c in calls))
+
+
+    def test_cli_must_resolve_the_same_private_release_before_transport(self):
+        result,calls=self.run_publish(cli_id_mismatch=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse(any(c[:3]==["gh","release","upload"] for c in calls))
         self.assertFalse(any(c[:3]==["gh","release","edit"] for c in calls))

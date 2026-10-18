@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """明确区分未发布、草稿和公开；HTTP/API 未知错误一律阻止发行。"""
+import argparse
 import json
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -52,13 +54,27 @@ def validate_release(value):
         raise RuntimeError("Release 状态或标签无法确认，停止发行")
 
 
-def release_state(repository, tag):
+def validate_identity(value, tag, release_id=None):
+    validate_release(value)
+    if value["tag_name"] != tag:
+        raise RuntimeError("Release 标签不匹配，停止发行")
+    if type(value.get("id")) is not int or value["id"] <= 0:
+        raise RuntimeError("Release ID 无法确认，停止发行")
+    if release_id is not None and value["id"] != release_id:
+        raise RuntimeError("Release ID 已改变，停止发行")
+    return value
+
+
+def find_release(repository, tag, release_id=None):
+    if release_id is not None:
+        value, _ = request_json(f"repos/{repository}/releases/{release_id}")
+        return validate_identity(value, tag, release_id)
     value, _ = request_json(f"repos/{repository}/releases/tags/{tag}", allow_missing=True)
     if value is not None:
         validate_release(value)
         if value["tag_name"] != tag:
             raise RuntimeError("Release 标签不匹配，停止发行")
-        return "draft" if value["draft"] else "published"
+        return value
     # GitHub 的标签端点会漏掉草稿。不能把这里的 404 直接当成不存在。
     drafts = []
     for page in range(1, 101):
@@ -69,21 +85,50 @@ def release_state(repository, tag):
             validate_release(release)
             if release["tag_name"] == tag:
                 if not release["draft"]:
-                    return "published"
+                    return release
                 drafts.append(release)
         if has_next and not releases:
             raise RuntimeError("Release 空页仍有续页标记，停止发行")
         if not has_next:
             if len(drafts) > 1:
                 raise RuntimeError("同一标签有多个草稿，停止发行")
-            return "draft" if drafts else "absent"
+            return drafts[0] if drafts else None
     raise RuntimeError("Release 分页超出限制，停止发行")
 
 
+def release_state(repository, tag):
+    value = find_release(repository, tag)
+    return "absent" if value is None else "draft" if value["draft"] else "published"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("repository")
+    parser.add_argument("tag")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--id", type=int, dest="release_id")
+    selection.add_argument("--created-response", type=Path)
+    parser.add_argument("--json", action="store_true", dest="json_output")
+    args = parser.parse_args()
+    if args.release_id is not None and args.release_id <= 0:
+        parser.error("Release ID 必须为正整数")
+    if args.created_response is not None:
+        value = validate_identity(json.loads(args.created_response.read_text()), args.tag)
+        if not value["draft"]:
+            raise RuntimeError("创建响应不是草稿，停止发行")
+    else:
+        value = find_release(args.repository, args.tag, args.release_id)
+    state = "absent" if value is None else "draft" if value["draft"] else "published"
+    if args.json_output:
+        if value is not None:
+            validate_identity(value, args.tag, args.release_id)
+        print(json.dumps({"state": state, "releaseId": None if value is None else value["id"]}))
+    else:
+        print(state)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        sys.exit("需要仓库和标签")
     try:
-        print(release_state(sys.argv[1], sys.argv[2]))
-    except (RuntimeError, ValueError) as error:
+        main()
+    except (RuntimeError, ValueError, OSError) as error:
         sys.exit(str(error))
