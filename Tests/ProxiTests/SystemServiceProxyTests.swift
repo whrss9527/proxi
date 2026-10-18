@@ -10,6 +10,8 @@ final class SystemServiceProxyTests: XCTestCase {
         var failWrite = Set<String>()
         var failRestore = Set<String>()
         var delay = false
+        var applyGate: (@Sendable () async -> Void)?
+        var restoreGate: (@Sendable () async -> Void)?
         private(set) var written: [String] = []
         private(set) var restored: [String] = []
 
@@ -31,6 +33,7 @@ final class SystemServiceProxyTests: XCTestCase {
             await applySystemPlans(services.map { .init(id: $0.id, name: $0.name, desired: desired) })
         }
         func applySystemPlans(_ plans: [SystemServiceProxy.Plan]) async -> SystemServiceResult {
+            if let applyGate { await applyGate() }
             if delay { try? await Task.sleep(for: .milliseconds(80)) }
             var result = SystemServiceResult()
             for plan in plans {
@@ -47,6 +50,7 @@ final class SystemServiceProxyTests: XCTestCase {
             return result
         }
         func restoreSystemServices(_ settings: [SystemServiceSettings]) async -> SystemServiceResult {
+            if let restoreGate { await restoreGate() }
             var result = SystemServiceResult()
             for item in settings {
                 if failRestore.contains(item.id) { result.failures[item.name] = "restore failed" }
@@ -313,4 +317,144 @@ final class SystemServiceProxyTests: XCTestCase {
         XCTAssertEqual(backend.restored, ["wifi"])
         XCTAssertEqual(backend.value("wifi"), wifi)
     }
+
+    private actor WriteGate {
+        let entered: XCTestExpectation
+        private var used = false
+        private var continuation: CheckedContinuation<Void, Never>?
+        init(_ entered: XCTestExpectation) { self.entered = entered }
+        func wait() async {
+            guard !used else { return }
+            used = true
+            await withCheckedContinuation {
+                continuation = $0
+                entered.fulfill()
+            }
+        }
+        func release() { continuation?.resume(); continuation = nil }
+    }
+
+    @MainActor
+    func testConfigurationEditsDuringNewServiceWriteReconcileAllServicesOnce() async throws {
+        let wifi = try service("wifi")
+        let ethernet = try service("ethernet", host: "original.corp.example", enabled: true)
+        let backend = Backend([wifi])
+        let state = state(backend)
+        var profile = try XCTUnwrap(state.selectedProfile)
+        state.turnOn(profile, askForPassword: false)
+        try await wait(state)
+        let wifiOriginal = state.persisted.originalSystemServices?["wifi"]
+        let entered = expectation(description: "新增网络服务写入已挂起")
+        let gate = WriteGate(entered)
+        backend.applyGate = { await gate.wait() }
+        backend.add(ethernet)
+        state.networkServicesChanged()
+        await fulfillment(of: [entered], timeout: 3)
+        profile.host = "b.corp.example"
+        state.update(profile)
+        profile.host = "c.corp.example"
+        state.update(profile)
+        state.networkServicesChanged()
+        await gate.release()
+        try await wait(state)
+        XCTAssertEqual(backend.value("wifi")?.snapshot.httpHost, "c.corp.example")
+        XCTAssertEqual(backend.value("ethernet")?.snapshot.httpHost, "c.corp.example")
+        XCTAssertEqual(state.persisted.originalSystemServices?["wifi"], wifiOriginal)
+        XCTAssertEqual(backend.written.filter { $0 == "wifi" }.count, 2)
+        XCTAssertEqual(backend.written.filter { $0 == "ethernet" }.count, 2)
+        state.turnOff()
+        try await wait(state)
+        XCTAssertEqual(backend.value("wifi"), wifi)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+    }
+
+    @MainActor
+    func testRemovedSystemScopeRestoresServicesWhoseWritesAllFailed() async throws {
+        let wifi = try service("wifi")
+        let ethernet = try service("ethernet", host: "original.corp.example", enabled: true)
+        let backend = Backend([wifi, ethernet])
+        backend.failWrite = ["wifi", "ethernet"]
+        let state = state(backend)
+        var profile = try XCTUnwrap(state.selectedProfile)
+        let entered = expectation(description: "系统范围首次写入已挂起")
+        let gate = WriteGate(entered)
+        backend.applyGate = { await gate.wait() }
+        state.turnOn(profile, askForPassword: false)
+        await fulfillment(of: [entered], timeout: 3)
+        profile.targets = [.git]
+        state.update(profile)
+        await gate.release()
+        try await wait(state)
+        XCTAssertEqual(backend.value("wifi"), wifi)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertEqual(Set(backend.restored), ["wifi", "ethernet"])
+        XCTAssertNil(state.persisted.originalSystemServices)
+        XCTAssertNil(state.persisted.pendingCleanup)
+        XCTAssertEqual(state.appliedTargets, [.git])
+    }
+
+
+    @MainActor
+    func testNetworkChangeDuringFailedTurnOffNeverAppliesEditedProfileToNewService() async throws {
+        let wifi = try service("wifi")
+        let ethernet = try service("ethernet", host: "untouched.corp.example", enabled: true)
+        let backend = Backend([wifi])
+        let state = state(backend)
+        var profile = try XCTUnwrap(state.selectedProfile)
+        state.turnOn(profile, askForPassword: false)
+        try await wait(state)
+        backend.failRestore = ["wifi"]
+        let entered = expectation(description: "关闭恢复在失败前挂起")
+        let gate = WriteGate(entered)
+        backend.restoreGate = { await gate.wait() }
+        state.turnOff()
+        await fulfillment(of: [entered], timeout: 3)
+        profile.host = "edited.corp.example"
+        state.update(profile)
+        backend.add(ethernet)
+        state.networkServicesChanged()
+        await gate.release()
+        try await wait(state)
+        XCTAssertEqual(backend.written, ["wifi"])
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertNotNil(state.persisted.originalSystemServices?["wifi"])
+        XCTAssertNotNil(state.lastError)
+        // 关闭失败后的另一个独立网络通知同样不能重新扩展代理。
+        state.networkServicesChanged()
+        try await wait(state)
+        XCTAssertEqual(backend.written, ["wifi"])
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        backend.failRestore = []
+        state.turnOff()
+        try await wait(state)
+        XCTAssertEqual(backend.value("wifi"), wifi)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertFalse(state.persisted.enabledByUs)
+    }
+
+
+    @MainActor
+    func testPendingStartupCleanupDoesNotApplyNewServicesBeforeCleanupStarts() async throws {
+        let original = try service("wifi", host: "original.corp.example", enabled: true)
+        let owned = try service("wifi", host: "debug.corp.example", enabled: true)
+        let ethernet = try service("ethernet", host: "untouched.corp.example", enabled: true)
+        let backend = Backend([owned, ethernet])
+        var persisted = PersistedState()
+        persisted.enabledByUs = true
+        persisted.appliedTargets = [.system]
+        persisted.originalSystemServices = ["wifi": backup(original)]
+        persisted.pendingCleanup = PendingCleanup(profileName: "开发代理", targets: [.system])
+        let state = state(backend, persisted: persisted)
+        state.networkServicesChanged()
+        try await wait(state)
+        XCTAssertTrue(backend.written.isEmpty)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertNotNil(state.persisted.pendingCleanup)
+        await state.resumePendingCleanup()
+        XCTAssertEqual(backend.value("wifi"), original)
+        XCTAssertEqual(backend.value("ethernet"), ethernet)
+        XCTAssertNil(state.persisted.pendingCleanup)
+        XCTAssertFalse(state.persisted.enabledByUs)
+    }
+
 }

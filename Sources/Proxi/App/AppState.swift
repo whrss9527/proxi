@@ -92,6 +92,15 @@ final class AppState: ObservableObject {
     private var watcher: SystemWatcher?
     private var restorationSecretsToDelete = Set<UUID>()
     private var networkServicesDirty = false
+    /// 显式关闭后即使清理失败，也不再向新网卡扩展代理；下次明确开启才恢复。
+    private var acceptsNewSystemServices = true
+    /// 已接受事务使用的配置快照。关闭/清理期间为 nil，不能从变化中的 status 推断。
+    private var transactionProfile: Profile?
+    private var transactionAllowsPasswordUI = false
+    /// 配置变更合并为一次协调，不把重复点击或失败自动排成重试。
+    private var configurationDirty = false
+    private var transactionPasswordChanged = false
+    private var exiting = false
     private let backupSystemService: (SystemServiceSettings) throws -> SystemServiceBackup
     private let resolveSystemService: (SystemServiceBackup) throws -> SystemServiceSettings
     private var refreshTimer: Timer?
@@ -133,6 +142,7 @@ final class AppState: ObservableObject {
         self.legacy = legacy
         self.config = config
         self.persisted = persisted
+        self.acceptsNewSystemServices = persisted.pendingCleanup == nil
         self.backend = backend
         self.persists = persists
         self.reachability = reachability
@@ -144,6 +154,8 @@ final class AppState: ObservableObject {
             if error { Log.error(message) } else { Log.info(message) }
         }
         snapshot = backend.currentSystemProxy()
+        // 旧记录只有 enabled 标记；在配置变化前固定当时的已接管范围，不能随新配置重新推断。
+        if self.persisted.appliedTargets == nil { self.persisted.appliedTargets = appliedTargets }
         guard persists else { return }
         $config
             .dropFirst()
@@ -536,6 +548,7 @@ final class AppState: ObservableObject {
     /// replacing：重新应用正在用的配置（在设置里改了、iCloud 同步来了新的）时传改之前的那份。这时系统代理的现状已经对不上
     /// 改过的配置，不能再从 status 推断上一个配置（改前有、改后没有的生效范围要清掉），也不能把自己设的代理当成「开启前的设置」记下来。
     func turnOn(_ profile: Profile, askForPassword: Bool = true, replacing old: Profile? = nil) {
+        guard !exiting else { return }
         guard !busy else {
             operationLog("忽略重复开启：已有代理操作或密码提示正在进行", false) // l10n-ignore：开关操作日志
             return
@@ -545,8 +558,16 @@ final class AppState: ObservableObject {
             onStatusChanged?()
             return
         }
+        let previous: Profile? = old ?? {
+            if case .on(let current) = status { return current }
+            return persisted.enabledByUs ? selectedProfile : nil
+        }()
         // 钥匙串授权和密码框都会运行嵌套事件循环，必须在它们之前挡住快捷键、网络切换和 CLI 重入。
         busy = true
+        transactionProfile = profile
+        transactionAllowsPasswordUI = askForPassword
+        configurationDirty = false
+        transactionPasswordChanged = false
         // 要登录的代理：密码从这台 Mac 的钥匙串里取；还没有（比如配置是从别的 Mac 同步来的）就请用户输入一次。
         var password = ""
         if profile.needsPassword {
@@ -560,6 +581,10 @@ final class AppState: ObservableObject {
                 }
                 password = entered
             } else {
+                // 取消提示不重放提示期间的编辑；用户下次明确开启时会读取最新配置。
+                transactionProfile = nil
+                configurationDirty = false
+                transactionPasswordChanged = false
                 busy = false
                 lastError = L("没有「%@」的代理密码，没有开启", profile.name)
                 operationLog("这台 Mac 的钥匙串里没有「\(profile.name)」的代理密码，没有开启", true) // l10n-ignore：开关操作日志
@@ -567,13 +592,10 @@ final class AppState: ObservableObject {
                 return
             }
         }
+        acceptsNewSystemServices = true
         lastError = nil
         targetFailures = [:]
-        let previous: Profile? = old ?? {
-            if case .on(let current) = status { return current }
-            return persisted.enabledByUs ? selectedProfile : nil
-        }()
-        if !backend.supportsServiceSnapshots && (persisted.original == nil || (old == nil && appliedTargets.isEmpty && !status.isOn)) {
+        if !backend.supportsServiceSnapshots && (persisted.original == nil || (previous == nil && appliedTargets.isEmpty)) {
             persisted.original = snapshot
         }
         let mode = config.offMode
@@ -589,11 +611,11 @@ final class AppState: ObservableObject {
                 }
             }
             // 上一个配置设置过、新配置没有的项先清掉。
-            if previous != nil {
-                for target in appliedTargets where !profile.targets.contains(target) {
-                    if let error = await clear(target: target, mode: mode) {
-                        failures.append(L("%@（清除）：%@", target.title, error))
-                    }
+            // 失败范围也可能已经写了一半：只要留有该范围原值，移除时就要恢复。
+            // 全局 original 不代表接管过 system，不能据此改动未触碰的系统代理。
+            for target in ProxyTarget.allCases where !profile.targets.contains(target) && (appliedTargets.contains(target) || hasOriginal(target)) {
+                if let error = await clear(target: target, mode: mode) {
+                    failures.append(L("%@（清除）：%@", target.title, error))
                 }
             }
             for target in ProxyTarget.allCases where profile.targets.contains(target) {
@@ -615,6 +637,10 @@ final class AppState: ObservableObject {
     func turnOff(clearing removed: Profile? = nil) {
         guard !busy else { return }
         busy = true
+        acceptsNewSystemServices = false
+        transactionProfile = nil
+        configurationDirty = false
+        transactionPasswordChanged = false
         targetFailures = [:]
         let current = removed.map { ProxyStatus.on($0) } ?? status
         let mode = config.offMode
@@ -656,6 +682,10 @@ final class AppState: ObservableObject {
     func clearAllProxySettings() async {
         guard !busy else { return }
         busy = true
+        acceptsNewSystemServices = false
+        transactionProfile = nil
+        configurationDirty = false
+        transactionPasswordChanged = false
         targetFailures = [:]
         var failures: [String] = []
         for target in ProxyTarget.allCases {
@@ -681,10 +711,7 @@ final class AppState: ObservableObject {
     }
 
     private func finish(action: String, failures: [String], successText: String) {
-        busy = false
         healthMonitor.reset()
-        refresh()
-        onStatusChanged?()
         if failures.isEmpty {
             operationLog("\(action) 成功", false) // l10n-ignore：开关操作日志
             lastError = nil
@@ -695,8 +722,57 @@ final class AppState: ObservableObject {
             lastError = text
             notify(title: L("%@时出错", action), body: text, problem: true)
         }
+        // refresh 的状态回调仍在事务内，回调中的配置变更也必须合并。
+        refresh()
+        completeConfigurationTransaction()
         Task { await checkHealth() }
+    }
+
+    /// 只有开启或补写网络服务才有重协调意图；关停、清理、退出都不能重新开启。
+    private func completeConfigurationTransaction() {
+        let completed = transactionProfile
+        let needsReconcile = configurationDirty
+        let passwordChanged = transactionPasswordChanged
+        let allowUI = transactionAllowsPasswordUI
+        // 关闭失败仍可能留有已接管范围，也不能把关闭期间的网络事件当作重新开启意图。
+        if completed == nil { networkServicesDirty = false }
+        transactionProfile = nil
+        configurationDirty = false
+        transactionPasswordChanged = false
+        busy = false
+        if !exiting, needsReconcile, let completed {
+            if let latest = config.profile(id: completed.id) {
+                if !latest.appliesSame(as: completed) || passwordChanged {
+                    turnOn(latest, askForPassword: allowUI, replacing: completed)
+                }
+            } else if !appliedTargets.isEmpty || ProxyTarget.allCases.contains(where: { hasOriginal($0) }) {
+                // 原值采集全失败时从未接管设置，不能用旧配置的范围回退清理。
+                turnOff(clearing: completed)
+            }
+        }
         if networkServicesDirty { networkServicesChanged() }
+        // 新事务启动前不报告空闲；也不能在此回调后清除新请求的上下文。
+        onStatusChanged?()
+    }
+
+    /// 忙时只有已接受的开启目标参与配置协调；关闭期间不借用 status 中的旧配置。
+    private var configurationTarget: Profile? {
+        if busy { return transactionProfile }
+        if case .on(let profile) = status { return profile }
+        return nil
+    }
+
+    private func reconcileConfiguration(_ previous: Profile, passwordChanged: Bool = false) {
+        guard !exiting else { return }
+        if busy {
+            guard transactionProfile?.id == previous.id else { return }
+            configurationDirty = true
+            transactionPasswordChanged = transactionPasswordChanged || passwordChanged
+        } else if let updated = config.profile(id: previous.id) {
+            turnOn(updated, replacing: previous)
+        } else {
+            turnOff(clearing: previous)
+        }
     }
 
     private func set(target: ProxyTarget, profile: Profile, password: String) async -> String? {
@@ -893,7 +969,7 @@ final class AppState: ObservableObject {
 
     /// 变化发生在代理操作期间时延后一次处理，只给本次接管中新增的服务补写。
     func networkServicesChanged() {
-        guard backend.supportsServiceSnapshots else { return }
+        guard !exiting, acceptsNewSystemServices, backend.supportsServiceSnapshots else { networkServicesDirty = false; return }
         if busy { networkServicesDirty = true; return }
         guard persisted.enabledByUs, appliedTargets.contains(.system),
               let profile = selectedProfile, profile.targets.contains(.system) else {
@@ -905,20 +981,22 @@ final class AppState: ObservableObject {
         let password = savedPassword(for: profile, allowUI: false)
         guard !profile.needsPassword || !password.isEmpty else { return }
         busy = true
+        transactionProfile = profile
+        transactionAllowsPasswordUI = false
+        configurationDirty = false
+        transactionPasswordChanged = false
         Task {
             let error = await setSystemServices(profile: profile, password: password, newOnly: true)
             persisted.enabledByUs = !appliedTargets.isEmpty
             let pending = ProxyTarget.allCases.filter { hasOriginal($0) && !appliedTargets.contains($0) }
             persisted.pendingCleanup = pending.isEmpty ? nil : PendingCleanup(profileName: profile.name, targets: pending)
             savePersisted()
-            busy = false
             refresh()
             if let error {
                 lastError = error
                 Log.error("新网络服务设置失败：\(error)")
             }
-            onStatusChanged?()
-            if networkServicesDirty { networkServicesChanged() }
+            completeConfigurationTransaction()
         }
     }
 
@@ -946,10 +1024,7 @@ final class AppState: ObservableObject {
         guard let index = config.profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         let previous = config.profiles[index]
         // 先看改之前是不是正在用它：改了地址以后，系统代理的现状就对不上新地址了。
-        let wasActive: Bool = {
-            if case .on(let current) = status { return current.id == profile.id }
-            return false
-        }()
+        let wasActive = configurationTarget?.id == profile.id
         config.profiles[index] = profile
         if profile.engine, persisted.extensionState.profile != profile {
             persisted.extensionState.profile = profile
@@ -957,17 +1032,16 @@ final class AppState: ObservableObject {
         }
         // 正在使用的配置改了地址、生效范围或者密码：立即重新应用（只改名字和颜色不用）。
         if wasActive, !profile.appliesSame(as: previous) || passwordChanged {
-            turnOn(profile, replacing: previous)
+            reconcileConfiguration(previous, passwordChanged: passwordChanged)
         }
     }
 
     func remove(_ profile: Profile) {
         // 「代理引擎」那条配置跟着扩展走，在扩展页里关闭扩展才会去掉。
         guard !profile.engine else { return }
-        if case .on(let current) = status, current.id == profile.id {
-            turnOff()
-        }
+        let active = configurationTarget.flatMap { $0.id == profile.id ? $0 : nil }
         config.profiles.removeAll { $0.id == profile.id }
+        if let active { reconcileConfiguration(active) }
         ProxyKeychain.delete(for: profile.id)
         if persisted.lastProfileID == profile.id {
             persisted.lastProfileID = config.profiles.first?.id
@@ -980,21 +1054,18 @@ final class AppState: ObservableObject {
     }
 
     /// 来自 iCloud 的配置：整个换掉。正在使用的配置如果改了地址就重新应用，被删了就关闭代理。
-    private func applyRemoteConfig(_ remote: AppConfig) {
-        let active: Profile? = {
-            if case .on(let profile) = status { return profile }
-            return nil
-        }()
+    func applyRemoteConfig(_ remote: AppConfig) {
+        let active = configurationTarget
         config = remote
         reconcileEngineProfile()
         guard let active, !active.engine else { return }
         // 换掉配置以后再算 status 就对不上了：上一个配置明确传进去。
         if let updated = remote.profile(id: active.id) {
             if !updated.appliesSame(as: active) {
-                turnOn(updated, replacing: active)
+                reconcileConfiguration(active)
             }
         } else {
-            turnOff(clearing: active)
+            reconcileConfiguration(active)
         }
     }
 
@@ -1116,6 +1187,9 @@ final class AppState: ObservableObject {
     /// 重新启动（一键更新、换语言）时什么都不关，新的实例接着用；注销、重新启动电脑、关机时设了登录时启动的话也一样
     /// （「退出时关闭代理」开着也不关）：登录后 Proxi 会再打开、接着启动代理引擎，代理接着用。
     func handleExit() {
+        exiting = true
+        configurationDirty = false
+        transactionPasswordChanged = false
         control.stop()
         if relaunching {
             // 同一个网络上按规则切过的记录交给新的实例：不然它启动时又按规则切一次，把手动改过的改回去。
@@ -1166,6 +1240,10 @@ final class AppState: ObservableObject {
     func resumePendingCleanup() async {
         guard let pending = persisted.pendingCleanup, !busy else { return }
         busy = true
+        acceptsNewSystemServices = false
+        transactionProfile = nil
+        configurationDirty = false
+        transactionPasswordChanged = false
         targetFailures = [:]
         persisted.appliedTargets = pending.targets
         Log.info("接着清理上次退出时没清理完的「\(pending.profileName)」：\(pending.targets.map(\.rawValue).joined(separator: "、"))")
