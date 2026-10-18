@@ -50,6 +50,7 @@ final class EngineStatusPublisher {
         let timer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.publish(force: true) }
         }
+        timer.tolerance = 2
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
         publish()

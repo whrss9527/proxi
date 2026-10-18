@@ -167,9 +167,16 @@ final class Engine: ObservableObject {
     /// 上次校验过的补丁内容和结果：补丁没变就不重复跑 mihomo -t。
     private var checkedPatch: (text: String, problem: String?)?
     private var lastSpeedSample: (date: Date, traffic: TrafficTotal)?
+    private var speedSamples: [SpeedSample] = []
+    private var speedHistoryVisible = false
+    private var settingsWindowVisible = false
+    var isSpeedHistoryPublishing: Bool { speedHistoryVisible }
     private var logTask: Task<Void, Never>?
     private var logSubscribers = 0
+    var isLiveLogStreaming: Bool { logTask != nil }
     private var pendingLog: [LogLine] = []
+    private var nextLogID = 0
+    var bufferedLiveLogCount: Int { pendingLog.count }
     private var logFlushScheduled = false
     /// 「最近的网速」保留的点数（每两秒一个，共两分钟）。
     static let speedHistoryLimit = 60
@@ -242,10 +249,12 @@ final class Engine: ObservableObject {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
         }
+        refreshTimer?.tolerance = 6
         // 规则集到期了就重新下载（间隔和订阅一样，默认 24 小时）。
         ruleUpdateTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.autoUpdateRuleSets() }
         }
+        ruleUpdateTimer?.tolerance = 180
         scheduleReconcile()
     }
 
@@ -392,13 +401,16 @@ final class Engine: ObservableObject {
         CoreRunner.killStrays()
         try prepareDirectory()
         try write(text)
+        // 内核控制接口的密钥：自己运行时就是 secret，经助手运行时是助手换上的。
+        let apiSecret: String
         if effectiveTun != nil {
             // 虚拟网卡要 root：请特权助手把文件复制到它的目录，以 root 运行它那份内核。
             tunStatus = .starting
             let helper = helperRunner
             let source = Self.directory.path
             let files = helperFiles
-            try await Task.detached(priority: .userInitiated) {
+            // root 的内核用助手换上的密钥（用户目录里那份配置里的密钥对它没用）。
+            apiSecret = try await Task.detached(priority: .userInitiated) {
                 try helper.start(source: source, files: files)
             }.value
             runningViaHelper = true
@@ -406,9 +418,10 @@ final class Engine: ObservableObject {
         } else {
             guard let executable = CoreBinary.executableURL else { throw CoreRunnerError.missingBinary }
             try runner.start(executable: executable, directory: Self.directory, config: configURL)
+            apiSecret = secret
             runningViaHelper = false
         }
-        let api = CoreAPI(port: engineConfig.apiPort, secret: secret)
+        let api = CoreAPI(port: engineConfig.apiPort, secret: apiSecret)
         self.api = api
         var version: String?
         for _ in 0..<50 {
@@ -458,6 +471,7 @@ final class Engine: ObservableObject {
         exitNode = nil
         exitTask?.cancel()
         speedHistory = []
+        speedSamples = []
         lastSpeedSample = nil
         manualNodeCount = nil
         updateTunStatus()
@@ -828,20 +842,28 @@ final class Engine: ObservableObject {
     }
 
     /// 按两次采样之间总流量的差算网速，留最近两分钟。
-    private func recordSpeed(_ total: TrafficTotal) {
-        let now = Date()
+    func recordSpeed(_ total: TrafficTotal, now: Date = Date()) {
         defer { lastSpeedSample = (now, total) }
         guard let last = lastSpeedSample else { return }
         let seconds = now.timeIntervalSince(last.date)
         guard seconds > 0.5 else { return }
         let up = max(0, total.upload - last.traffic.upload)
         let down = max(0, total.download - last.traffic.download)
-        var history = speedHistory
+        var history = speedSamples
         history.append(SpeedSample(date: now, upload: Int64(Double(up) / seconds), download: Int64(Double(down) / seconds)))
         if history.count > Self.speedHistoryLimit {
             history.removeFirst(history.count - Self.speedHistoryLimit)
         }
-        speedHistory = history
+        speedSamples = history
+        if speedHistoryVisible { speedHistory = history }
+    }
+
+    /// 后台保留统计，但只有连接页可见时才通知 SwiftUI 重画网速曲线。
+    func setSpeedHistoryVisible(_ visible: Bool) {
+        let visible = visible && settingsWindowVisible
+        guard visible != speedHistoryVisible else { return }
+        speedHistoryVisible = visible
+        if visible { speedHistory = speedSamples }
     }
 
     private func record(_ list: [CoreConnection]) {
@@ -1291,8 +1313,10 @@ final class Engine: ObservableObject {
             let (proxies, providers) = try await (proxiesTask, providersTask)
             let ruleProviders = (try? await ruleProvidersTask) ?? [:]
             let engine = engineConfig
-            currentSelection = proxies[Self.selectorGroup]?.now
-            autoNode = proxies[Self.autoGroup]?.now
+            let selection = proxies[Self.selectorGroup]?.now
+            let automatic = proxies[Self.autoGroup]?.now
+            if selection != currentSelection { currentSelection = selection }
+            if automatic != autoNode { autoNode = automatic }
             var list: [Node] = []
             var statuses: [UUID: SubscriptionStatus] = [:]
             for subscription in engine.activeSubscriptions {
@@ -1316,8 +1340,8 @@ final class Engine: ObservableObject {
             if list.map(\.name) != nodes.map(\.name) {
                 Log.info("读取到 \(list.count) 个节点")
             }
-            nodes = list
-            subscriptionStatus = statuses
+            if list != nodes { nodes = list }
+            if statuses != subscriptionStatus { subscriptionStatus = statuses }
             var groups: [GroupState] = []
             for group in engine.groups {
                 guard let proxy = proxies[group.name] else { continue }
@@ -1924,12 +1948,28 @@ final class Engine: ObservableObject {
 
     // MARK: - 实时日志
 
+    /// AppKit 隐藏窗口不一定使 SwiftUI onDisappear 执行，必须直接停止后台日志任务。
+    func setSettingsWindowVisible(_ visible: Bool) {
+        guard visible != settingsWindowVisible else { return }
+        settingsWindowVisible = visible
+        if !visible { setSpeedHistoryVisible(false) }
+        updateLiveLogSubscription()
+    }
+
     /// 高级页打开时订阅内核的实时日志，关掉时退订；内核重启后自动接上。
     func subscribeLiveLog() {
         logSubscribers += 1
+        updateLiveLogSubscription()
+    }
+
+    private func updateLiveLogSubscription() {
+        guard settingsWindowVisible, logSubscribers > 0 else {
+            logTask?.cancel()
+            logTask = nil
+            return
+        }
         guard logTask == nil else { return }
         logTask = Task { @MainActor [weak self] in
-            var nextID = 0
             while !Task.isCancelled {
                 guard let self else { return }
                 guard let api = self.api, self.isRunning else {
@@ -1943,8 +1983,7 @@ final class Engine: ObservableObject {
                         guard let data = line.data(using: .utf8),
                               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                               let payload = json["payload"] as? String else { continue }
-                        nextID += 1
-                        self.appendLog(LogLine(id: nextID, date: Date(), level: (json["type"] as? String) ?? "info", text: payload))
+                        self.recordLiveLog(level: (json["type"] as? String) ?? "info", text: payload)
                     }
                 } catch {
                     // 内核重启或者停了：稍后重连。
@@ -1956,19 +1995,22 @@ final class Engine: ObservableObject {
 
     func unsubscribeLiveLog() {
         logSubscribers = max(0, logSubscribers - 1)
-        if logSubscribers == 0 {
-            logTask?.cancel()
-            logTask = nil
-        }
+        updateLiveLogSubscription()
     }
 
     func clearLiveLog() {
+        pendingLog.removeAll(keepingCapacity: true)
         liveLog = []
     }
 
     /// 日志一行行来得很快：先攒着，每 0.3 秒刷新一次界面。
-    private func appendLog(_ line: LogLine) {
-        pendingLog.append(line)
+    func recordLiveLog(level: String, text: String, date: Date = Date()) {
+        nextLogID += 1
+        // 分批丢弃最旧的待刷新日志，限制高流量时的内存，避免逐行删除导致反复搬移数组。
+        if pendingLog.count >= Self.liveLogLimit * 2 {
+            pendingLog.removeFirst(Self.liveLogLimit)
+        }
+        pendingLog.append(LogLine(id: nextLogID, date: date, level: level, text: text))
         guard !logFlushScheduled else { return }
         logFlushScheduled = true
         Task { @MainActor [weak self] in
@@ -1979,8 +2021,9 @@ final class Engine: ObservableObject {
 
     private func flushLog() {
         logFlushScheduled = false
+        guard !pendingLog.isEmpty else { return }
         var lines = liveLog + pendingLog
-        pendingLog = []
+        pendingLog.removeAll(keepingCapacity: true)
         if lines.count > Self.liveLogLimit {
             lines.removeFirst(lines.count - Self.liveLogLimit)
         }

@@ -55,6 +55,7 @@ final class HelperManager: ObservableObject {
                 await self.refresh()
             }
         }
+        timer?.tolerance = 6
         Task { await refresh() }
     }
 

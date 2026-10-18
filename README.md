@@ -34,6 +34,8 @@ The interface is in English when your system language isn't Chinese, and you can
 
 ## Features
 
+- **Network Monitor**: open it from the menu bar panel or context menu to see device speed and live upload/download activity by app. Search, sort, or pause the view; sampling stops when the window is closed or minimized. App counters include local traffic and can count proxy forwarding more than once.
+
 - **One-click switching**: the system proxy, Terminal environment variables (`http_proxy`, `https_proxy`, `all_proxy`, `no_proxy`), git and npm / pnpm / yarn switch together; set up several profiles and change between them with a click.
 - **Your own proxies**: a corporate proxy, an intranet gateway, or a local debugging proxy such as Charles, Proxyman or mitmproxy. HTTP, SOCKS5 and PAC are supported, proxies that require signing in can have a user name and password (the password stays in this Mac's keychain and is never synced), and each profile has its own bypass list.
 - **Always at hand**: a menu bar panel, a global hotkey (⌃⌥P by default), notifications, connection tests, detection of debugging proxies running on this Mac, and a one-line command that brings the proxy to Terminal windows that are already open.

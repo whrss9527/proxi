@@ -1,5 +1,7 @@
 /* 英文界面。键是代码里 L("…") 的中文原文，改了代码里的中文要同时改这里；Scripts/check-localization.py 会检查。 */
 
+"%@ 开启前" = "%@ before enabling";
+
 /* App/AppDelegate.swift */
 "设置…" = "Settings…";
 
@@ -611,3 +613,37 @@
 "iCloud 配置格式 %@ 比这台 Mac 支持的版本更新，请更新 Proxi。" = "iCloud configuration format %@ is newer than this Mac supports. Update Proxi.";
 "这台 Mac 不支持此配置的生效范围，请更新 Proxi。" = "This Mac does not support the targets of this profile. Update Proxi.";
 "这台 Mac 不支持" = "Unsupported on this Mac";
+"无法读取" = "Unable to read";
+"无法读取开启前的代理设置，保留当前设置以便重试" = "Unable to read the previous proxy settings. Current settings have been kept so you can retry.";
+"launchctl getenv %@ 失败：%@" = "launchctl getenv %@ failed: %@";
+"开启前" = "Before enabling";
+"git 开启前" = "Git before enabling";
+"npm 开启前" = "npm before enabling";
+
+/* 网络监控 */
+"上传" = "Upload";
+"下载" = "Download";
+"仅显示活动项" = "Active only";
+"已暂停" = "Paused";
+"应用 / 进程" = "App / Process";
+"当前没有活动的网络进程" = "No active network processes";
+"总活动量" = "Total activity";
+"排序" = "Sort by";
+"搜索应用、进程或 PID" = "Search apps, processes, or PIDs";
+"整机上传" = "Device upload";
+"整机下载" = "Device download";
+"整机网速统计物理网卡；应用活动包含本机通信，代理转发时可能重复计数。" = "Device speed measures physical interfaces. App activity includes local traffic and may count proxy forwarding more than once.";
+"无法识别系统的应用网络统计" = "The system network statistics could not be recognized";
+"无法读取应用网络统计：%@" = "Unable to read app network statistics: %@";
+"暂停" = "Pause";
+"暂停后保留当前画面，继续时重新采样" = "Pause to freeze this view; resume to collect fresh samples";
+"最近采样：%@" = "Last sampled: %@";
+"查看哪些应用正在使用网络" = "See which apps are using the network";
+"正在采样…" = "Collecting samples…";
+"没有匹配的应用或进程" = "No matching apps or processes";
+"继续" = "Resume";
+"网络监控" = "Network Monitor";
+"网络监控…" = "Network Monitor…";
+"网络监控：查看各应用的上传与下载" = "Network Monitor: see upload and download activity by app";
+"进程数" = "Processes";
+"部分系统进程可能受权限限制；关闭或最小化窗口后停止采样。" = "System permissions may hide some processes. Sampling stops when this window is closed or minimized.";

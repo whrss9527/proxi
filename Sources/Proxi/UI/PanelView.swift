@@ -3,6 +3,7 @@ import SwiftUI
 
 struct PanelActions {
     var openSettings: (SettingsPage?) -> Void
+    var openNetworkMonitor: () -> Void
     /// 打开扩展「代理引擎」的设置窗口（它没有自己的菜单栏图标）。
     var openEngineSettings: () -> Void
     var close: () -> Void
@@ -50,6 +51,21 @@ struct PanelView: View {
             if let error = state.lastError {
                 errorCard(error)
             }
+            Button {
+                actions.openNetworkMonitor()
+            } label: {
+                HStack {
+                    Label(L("网络监控"), systemImage: "chart.bar.xaxis")
+                    Spacer()
+                    Image(systemName: "arrow.up.forward")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.system(size: 12, weight: .medium))
+                .padding(10)
+            }
+            .buttonStyle(HoverRowStyle())
+            .glassCard()
+            .help(L("网络监控：查看各应用的上传与下载"))
             footer
         }
         .padding(12)

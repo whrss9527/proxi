@@ -7,13 +7,16 @@ import PackageDescription
 let package = Package(
     name: "Proxi",
     platforms: [.macOS(.v14)],
+    dependencies: [.package(path: "Packages/ProxiProcess")],
     targets: [
         .executableTarget(
             name: "Proxi",
+            dependencies: ["ProxiProcess"],
             path: "Sources/Proxi"
         ),
         .executableTarget(
             name: "ProxiEngine",
+            dependencies: ["ProxiProcess"],
             path: "Sources/ProxiEngine"
         ),
         .testTarget(

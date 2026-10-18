@@ -30,6 +30,7 @@ final class SpeedMeter: ObservableObject {
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.sampleSystem() }
             }
+            timer?.tolerance = 0.2
         case .engine:
             coreTask = Task { @MainActor [weak self] in await self?.consumeCore() }
         }

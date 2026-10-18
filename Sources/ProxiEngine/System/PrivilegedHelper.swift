@@ -32,7 +32,8 @@ enum HelperPaths {
 enum HelperProtocol {
     /// 程序和助手之间的协议版本。程序更新后发现助手的版本不同，会请用户重新安装助手。
     /// 2：内核目录只有 root 能读（里面的配置有控制接口的密钥和节点的密码），内核日志只给装助手的用户读。
-    static let version = 2
+    /// 3：只接受签名对得上的代理引擎的连接（安装时记下要求，见 HelperClientCheck）；以 root 运行的配置先核对过（见 HelperConfigCheck）。
+    static let version = 3
 }
 
 /// 助手报告的状态。
@@ -136,14 +137,107 @@ enum HelperFiles {
         }
     }
 
-    /// 按名单复制；名单要检查过（数量、路径）。
-    static func copy(_ files: [String], from source: String, to target: String, owner: UInt32) throws {
+    /// 按名单复制；名单要检查过（数量、路径）。先全部读出来、核对过内核配置，再写进去：配置不行就一个都不换。
+    /// 内核配置按核对时解析出来的内容重新写出（内核读到的就是核对过的那份），控制接口的密钥换成 secret。
+    static func copy(_ files: [String], from source: String, to target: String, owner: UInt32, secret: String) throws {
         guard source.hasPrefix("/") else { throw HelperError(L("来源目录要是绝对路径")) }
         guard files.count <= maxFiles else { throw HelperError(L("文件太多了")) }
-        for relative in files {
-            let data = try readFile(relative, from: source, owner: owner)
+        var contents = try files.map { ($0, try readFile($0, from: source, owner: owner)) }
+        for index in contents.indices where contents[index].0 == "config.yaml" {
+            contents[index].1 = try HelperConfigCheck.sanitized(contents[index].1, directory: target, secret: secret)
+        }
+        for (relative, data) in contents {
             try write(data, to: relative, in: target)
         }
+    }
+}
+
+/// 以 root 运行内核前核对配置：内核只在自己的目录里读写文件，不改系统设置。
+/// 订阅、规则集、证书的路径要在这个目录里（也不能是内核自己的配置）；会在目录以外建文件、或者改系统时间的设置不允许。
+/// 程序生成的配置用不到这些设置；用户的配置补丁里写了，增强模式和网关模式就不启动，报出是哪几项。
+enum HelperConfigCheck {
+    static let forbiddenKeys: Set<String> = ["external-controller-unix", "external-controller-pipe", "external-ui", "external-ui-url", "external-ui-name"]
+
+    /// 核对过、换上密钥后重新写出的配置；读不懂或者有不允许的设置时抛错。
+    /// 控制接口的密钥由助手每次启动内核时重新生成，只告诉连进来的代理引擎：用户目录里那份配置里的密钥对 root 的内核没用。
+    static func sanitized(_ data: Data, directory: String, secret: String) throws -> Data {
+        guard let text = String(data: data, encoding: .utf8), var root = try? YAMLParser.parse(text), case .mapping = root else {
+            throw HelperError(L("读不懂内核配置"))
+        }
+        let problems = problems(in: root, directory: directory)
+        guard problems.isEmpty else {
+            throw HelperError(L("内核配置里有不能以 root 运行的设置：%@", problems.joined(separator: L("、"))))
+        }
+        root.remove("secret")
+        root.set("secret", .string(secret))
+        return Data(YAMLWriter.write(root).utf8)
+    }
+
+    /// 不允许的设置（键名或者「订阅.名字.path」这样的位置）；空的就是可以运行。
+    static func problems(in root: YAMLNode, directory: String) -> [String] {
+        var problems: [String] = []
+        for pair in root.pairs ?? [] where forbiddenKeys.contains(pair.key) && !pair.value.isNull && !problems.contains(pair.key) {
+            problems.append(pair.key)
+        }
+        // 内核会按网络时间改系统时钟。
+        if let value = root["ntp"]?["write-to-system"], !value.isNull, value.bool != false {
+            problems.append("ntp.write-to-system")
+        }
+        let config = (directory as NSString).appendingPathComponent("config.yaml")
+        for section in ["proxy-providers", "rule-providers"] {
+            for provider in root[section]?.pairs ?? [] {
+                // 下载的内容会写到 path：不能在目录外面，也不能盖掉内核自己的配置。
+                if let path = provider.value["path"]?.string, !isInside(path, directory) || resolve(path, directory) == resolve(config, directory) {
+                    problems.append("\(section).\(provider.key).path")
+                }
+            }
+        }
+        if let tls = root["tls"] {
+            for key in ["certificate", "private-key"] {
+                // 直接写在配置里的 PEM 内容不是路径。
+                if let value = tls[key]?.string, !value.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("-----BEGIN"), !isInside(value, directory) {
+                    problems.append("tls.\(key)")
+                }
+            }
+        }
+        return problems
+    }
+
+    /// 路径（相对的按 directory 算）在 directory 里面；「..」先算掉再比。
+    static func isInside(_ path: String, _ directory: String) -> Bool {
+        let base = resolve(directory, "/")
+        let resolved = resolve(path, directory)
+        return resolved == base || resolved.hasPrefix(base + "/")
+    }
+
+    private static func resolve(_ path: String, _ directory: String) -> String {
+        let full = path.hasPrefix("/") ? path : (directory as NSString).appendingPathComponent(path)
+        return URL(fileURLWithPath: full).standardized.path
+    }
+}
+
+/// 只让代理引擎自己指挥助手：连接对方的代码签名要满足安装时记下的要求（守护进程按连接时的 audit token 核对）。
+/// 发布版是「这个 bundle id、这个 Team ID 的开发者签名」，代理引擎更新以后照样认；
+/// ad-hoc 签名的（开发、CI）只认安装时的那一份程序（cdhash），换了程序要重新安装助手。
+enum HelperClientCheck {
+    static func requirement(identifier: String, teamID: String?, cdhash: String?) -> String? {
+        if let teamID, !teamID.isEmpty, teamID.allSatisfy({ $0.isLetter || $0.isNumber }) {
+            return "identifier \"\(identifier)\" and anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
+        }
+        if let cdhash, !cdhash.isEmpty, cdhash.allSatisfy(\.isHexDigit) {
+            return "cdhash H\"\(cdhash)\""
+        }
+        return nil
+    }
+
+    /// 安装时按代理引擎程序（executable 所在的 app）的签名生成要求。没有签名就不装。
+    static func requirement(forExecutable executable: String) throws -> String {
+        let bundle = executable.range(of: "/Contents/MacOS/").map { String(executable[..<$0.lowerBound]) } ?? executable
+        let url = URL(fileURLWithPath: bundle)
+        guard let requirement = requirement(identifier: AppInfo.bundleIdentifier, teamID: CodeSignature.teamIdentifier(of: url), cdhash: CodeSignature.cdhash(of: url)) else {
+            throw HelperError(L("代理引擎没有签名，不能安装特权助手"))
+        }
+        return requirement
     }
 }
 
@@ -184,10 +278,11 @@ enum Forwarding {
 
 enum HelperInstaller {
     /// launchd 的配置：开机就运行，退出了自动重启。
-    static func plist(uid: UInt32, appVersion: String) throws -> Data {
+    /// clientRequirement：只接受签名满足它的程序的连接（见 HelperClientCheck）。
+    static func plist(uid: UInt32, appVersion: String, clientRequirement: String) throws -> Data {
         let dictionary: [String: Any] = [
             "Label": HelperPaths.label,
-            "ProgramArguments": [HelperPaths.executable, "helper", "run", "--uid", String(uid), "--version", appVersion],
+            "ProgramArguments": [HelperPaths.executable, "helper", "run", "--uid", String(uid), "--version", appVersion, "--client", clientRequirement],
             "RunAtLoad": true,
             "KeepAlive": true,
             "StandardOutPath": HelperPaths.log,
@@ -202,6 +297,8 @@ enum HelperInstaller {
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: executable) else { throw HelperError(L("找不到程序：%@", executable)) }
         guard fm.isExecutableFile(atPath: core) else { throw HelperError(L("找不到内核：%@", core)) }
+        // 助手只听签名和这个程序一样的代理引擎的话。
+        let clientRequirement = try HelperClientCheck.requirement(forExecutable: executable)
         // 先查一遍来源（不动任何东西），复制到 root 的目录以后再查一遍。
         try verifyCore(core, removeIfWrong: false)
         // 先停掉旧的（更新助手时），再换文件。
@@ -218,7 +315,7 @@ enum HelperInstaller {
         try rootDirectory(HelperPaths.dataDirectory)
         // 内核目录别人只能穿过、不能列出和读里面的文件（内核日志单独给装助手的用户读，见 launchCoreLocked）。
         try rootDirectory(HelperPaths.coreDirectory, mode: 0o711)
-        try plist(uid: uid, appVersion: appVersion).write(to: URL(fileURLWithPath: HelperPaths.plist), options: .atomic)
+        try plist(uid: uid, appVersion: appVersion, clientRequirement: clientRequirement).write(to: URL(fileURLWithPath: HelperPaths.plist), options: .atomic)
         try own(HelperPaths.plist, mode: 0o644)
         // 刚停掉的旧助手可能还没退干净，加载失败时稍等再试。
         var result = try Shell.runSync("/bin/launchctl", ["bootstrap", "system", HelperPaths.plist], timeout: 30)
@@ -305,8 +402,12 @@ enum HelperInstaller {
 final class HelperDaemon: @unchecked Sendable {
     let allowedUID: UInt32
     let appVersion: String
+    /// 连接对方的签名要满足的要求（安装时按代理引擎的签名生成）；空的就谁都不接受。
+    let clientRequirement: String
     private let lock = NSLock()
     private var process: Process?
+    /// root 的内核控制接口的密钥：每次启动内核时重新生成，只在回应里告诉代理引擎。
+    private var coreSecret = CoreConfigBuilder.makeSecret()
     private var lease: Lease?
     private var savedForwarding: ForwardingState?
     private var coreVersion = ""
@@ -319,9 +420,10 @@ final class HelperDaemon: @unchecked Sendable {
         init(fd: Int32) { self.fd = fd }
     }
 
-    init(uid: UInt32, appVersion: String) {
+    init(uid: UInt32, appVersion: String, clientRequirement: String) {
         allowedUID = uid
         self.appVersion = appVersion
+        self.clientRequirement = clientRequirement
     }
 
     func run() -> Never {
@@ -347,7 +449,8 @@ final class HelperDaemon: @unchecked Sendable {
                 if errno != EINTR { Thread.sleep(forTimeInterval: 0.1) }
                 continue
             }
-            guard let peer = Self.peerUID(client), peer == allowedUID || peer == 0 else {
+            // 只接受装助手的用户（或 root）那边、签名对得上的代理引擎；别的程序就算是同一个用户的也不行。
+            guard let peer = Self.peerUID(client), peer == allowedUID || peer == 0, clientAllowed(client) else {
                 close(client)
                 continue
             }
@@ -358,6 +461,21 @@ final class HelperDaemon: @unchecked Sendable {
     }
 
     // MARK: 连接
+
+    /// 连接对方是签名对得上的代理引擎。
+    func clientAllowed(_ client: Int32) -> Bool {
+        guard !clientRequirement.isEmpty else {
+            Self.log("没有记下代理引擎的签名要求，不接受连接（请重新安装助手）")
+            return false
+        }
+        #if canImport(Security)
+        if CodeSignature.peer(client, satisfies: clientRequirement) { return true }
+        Self.log("拒绝了一个签名对不上的连接")
+        return false
+        #else
+        return false
+        #endif
+    }
 
     private func openListener() throws -> Int32 {
         let path = HelperPaths.socket
@@ -439,7 +557,7 @@ final class HelperDaemon: @unchecked Sendable {
             let (source, files) = try fileList(params)
             lock.lock()
             defer { lock.unlock() }
-            try HelperFiles.copy(files, from: source, to: HelperPaths.coreDirectory, owner: allowedUID)
+            try HelperFiles.copy(files, from: source, to: HelperPaths.coreDirectory, owner: allowedUID, secret: coreSecret)
             return ["copied": files.count]
         case "stop":
             lock.lock()
@@ -480,11 +598,12 @@ final class HelperDaemon: @unchecked Sendable {
         defer { lock.unlock() }
         stopCoreLocked()
         endLeaseLocked()
-        try HelperFiles.copy(files, from: source, to: HelperPaths.coreDirectory, owner: allowedUID)
+        coreSecret = CoreConfigBuilder.makeSecret()
+        try HelperFiles.copy(files, from: source, to: HelperPaths.coreDirectory, owner: allowedUID, secret: coreSecret)
         try launchCoreLocked()
         let lease = Lease(fd: client)
         self.lease = lease
-        reply(client, JSONRPC.result(id: id, ["pid": Int(process?.processIdentifier ?? 0), "core": coreVersion]))
+        reply(client, JSONRPC.result(id: id, ["pid": Int(process?.processIdentifier ?? 0), "core": coreVersion, "secret": coreSecret]))
         return lease
     }
 
@@ -757,11 +876,15 @@ final class HelperCoreRunner: @unchecked Sendable {
     }
 
     /// 请助手复制文件并启动内核；回应之后这个连接一直开着，断开就等于让助手停掉内核。
-    func start(source: String, files: [String]) throws {
+    /// 返回助手给这个内核换上的控制接口密钥。
+    func start(source: String, files: [String]) throws -> String {
         stop()
         let fd = try HelperClient.openConnection(timeout: 60)
+        let secret: String
         do {
-            _ = try HelperClient.request("start", params: ["source": source, "files": files], on: fd)
+            let result = try HelperClient.request("start", params: ["source": source, "files": files], on: fd)
+            guard let value = result["secret"] as? String, !value.isEmpty else { throw HelperError(L("特权助手的版本不对，请重新安装助手")) }
+            secret = value
         } catch {
             close(fd)
             throw error
@@ -774,6 +897,7 @@ final class HelperCoreRunner: @unchecked Sendable {
         Thread.detachNewThread { [weak self] in
             self?.watch(lease)
         }
+        return secret
     }
 
     private func watch(_ lease: Lease) {
@@ -868,7 +992,7 @@ enum HelperCommand {
                     fail(L("少了 --uid"))
                     return 2
                 }
-                HelperDaemon(uid: uid, appVersion: option("--version") ?? "").run()
+                HelperDaemon(uid: uid, appVersion: option("--version") ?? "", clientRequirement: option("--client") ?? "").run()
             case "status":
                 let status = try HelperClient.status()
                 print(L("特权助手在运行：程序版本 %@，内核 %@，协议 %@", status.appVersion, status.coreVersion, status.protocolVersion) + (status.isCurrent ? "" : L("（和这个程序不一致，需要重新安装）")))

@@ -52,6 +52,13 @@ struct ExtensionStatus: Codable, Equatable {
     func isAlive(now: Date = Date(), processExists: (Int32) -> Bool = { kill($0, 0) == 0 }) -> Bool {
         pid > 0 && processExists(pid) && now.timeIntervalSince(updatedAt) < 45
     }
+
+    /// 心跳只用来判断存活；时间变化不应让所有观察扩展的界面重绘。
+    func hasSameState(as other: ExtensionStatus) -> Bool {
+        var previous = other
+        previous.updatedAt = updatedAt
+        return self == previous
+    }
 }
 
 enum ExtensionError: LocalizedError, Equatable {
@@ -112,10 +119,21 @@ final class ExtensionManager: ObservableObject {
     var onChange: (() -> Void)?
 
     private var timer: Timer?
+    private var started = false
+    var isPolling: Bool { timer != nil }
+    private let readStatus: () -> ExtensionStatus?
     private var installTask: Task<Void, Never>?
     /// 上次启动代理引擎的时间，和最近几次自动重新启动它的时间（见 keepRunning）。
     private var lastLaunch: Date?
     private var restarts: [Date] = []
+
+    init(readStatus: @escaping () -> ExtensionStatus? = {
+        guard let data = try? Data(contentsOf: ExtensionManager.statusURL),
+              let file = ExtensionStatus.decode(data), file.isAlive() else { return nil }
+        return file
+    }) {
+        self.readStatus = readStatus
+    }
 
     // MARK: - 位置
 
@@ -152,14 +170,13 @@ final class ExtensionManager: ObservableObject {
 
     /// 启动时调用：开着扩展时确认代理引擎装好、和 Proxi 同一个版本，再启动它；没开时什么都不做。
     func start() {
+        started = true
         if ProcessInfo.processInfo.environment[Self.testAcceptVariable] == "1", !state.enabled {
             Log.info("扩展：测试环境变量 \(Self.testAcceptVariable)=1，按已同意说明处理")
             accept()
         }
         refreshInstalled()
-        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
-        }
+        updatePolling()
         guard state.enabled else {
             Log.info("扩展：代理引擎没有开启")
             return
@@ -176,6 +193,7 @@ final class ExtensionManager: ObservableObject {
         current.acceptedAt = Date()
         writeState?(current)
         Log.info("扩展：用户同意了说明（第 \(Self.disclaimerVersion) 版），开启代理引擎")
+        updatePolling()
         onChange?()
     }
 
@@ -213,6 +231,7 @@ final class ExtensionManager: ObservableObject {
         current.enabled = false
         current.restoreActive = false
         writeState?(current)
+        updatePolling()
         await quit()
         if removeApp {
             try? FileManager.default.removeItem(at: Self.appURL)
@@ -457,6 +476,7 @@ final class ExtensionManager: ObservableObject {
 
     /// 读代理引擎的状态文件。
     func poll() {
+        updatePolling()
         guard state.enabled else {
             if status != nil {
                 status = nil
@@ -464,18 +484,38 @@ final class ExtensionManager: ObservableObject {
             }
             return
         }
-        var current: ExtensionStatus?
-        if let data = try? Data(contentsOf: Self.statusURL), let file = ExtensionStatus.decode(data), file.isAlive() {
-            current = file
+        let current = readStatus()
+        let unchanged: Bool
+        if let current, let status {
+            unchanged = current.hasSameState(as: status)
+        } else {
+            unchanged = current == nil && status == nil
         }
-        if current != status {
+        if !unchanged {
             let wasRunning = status?.coreRunning ?? false
             status = current
             if (current?.coreRunning ?? false) != wasRunning {
                 Log.info(current?.coreRunning == true ? "扩展：代理引擎的内核在运行，端口 \(current?.mixedPort ?? 0)" : "扩展：代理引擎的内核没在运行")
             }
             onChange?()
+        } else if state.restoreActive, current?.coreRunning == true {
+            // 启动恢复可能正等另一项开关操作结束，心跳仍要重试这项待办，但不发布无变化的状态。
+            onChange?()
         }
         keepRunning()
+    }
+
+    /// 关闭的扩展无需定时读文件；再次开启后恢复轮询和崩溃重启检查。
+    private func updatePolling() {
+        guard started, state.enabled else {
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.poll() }
+        }
+        timer?.tolerance = 0.6
     }
 }

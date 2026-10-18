@@ -83,6 +83,7 @@ final class AppState: ObservableObject {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+        refreshTimer?.tolerance = 2
         refresh()
         engine.readConfig = { [weak self] in self?.config ?? AppConfig() }
         engine.writeEngine = { [weak self] engine in self?.config.engine = engine }
@@ -228,7 +229,8 @@ final class AppState: ObservableObject {
     }
 
     func refresh() {
-        snapshot = SystemProxy.current()
+        let current = SystemProxy.current()
+        if current != snapshot { snapshot = current }
         let addresses = LocalNetwork.addresses()
         if addresses != lanAddresses {
             lanAddresses = addresses

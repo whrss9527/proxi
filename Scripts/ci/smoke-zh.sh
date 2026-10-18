@@ -39,6 +39,12 @@ show_settings general
 screencapture -x screenshots/general.png || true
 show_settings extensions
 screencapture -x screenshots/extensions.png || true
+open 'proxi://network-monitor'
+wait_json dist/Proxi.app/Contents/MacOS/Proxi '.interface.networkMonitorVisible == true and .interface.networkMonitorSampling == true and .interface.networkMonitorReady == true'
+screencapture -x screenshots/network-monitor.png || true
+open 'proxi://network-monitor?action=close'
+wait_json dist/Proxi.app/Contents/MacOS/Proxi '.interface.networkMonitorVisible == false and .interface.networkMonitorSampling == false'
+wait_for 10 "网络监控进程停止" not_running nettop
 echo "===== 程序日志 ====="; cat "$support/proxi.log" || true
 grep -q "iCloud 来的" "$support/config.json" || { echo "拉到的配置没有写到本机"; cat "$support/config.json"; exit 1; }
 # 命令行、MCP 和 URL 命令：经本机控制接口操作正在运行的程序。

@@ -117,6 +117,8 @@ enum URLCommand: Equatable {
     case use(String)
     case settings(SettingsPage?)
     case panel
+    case networkMonitor
+    case closeNetworkMonitor
     /// 检查更新，有新版本就直接下载安装。
     case update
     /// 执行一个控制接口的工具（只允许查看和日常操作）。
@@ -137,6 +139,8 @@ enum URLCommand: Equatable {
             let page = query.first { $0.name == "page" }?.value.flatMap { SettingsPage(rawValue: $0.lowercased()) }
             return .settings(page)
         case "panel", "menu": return .panel
+        case "network-monitor":
+            return query.first { $0.name == "action" }?.value == "close" ? .closeNetworkMonitor : .networkMonitor
         case "update", "upgrade": return .update
         case "use", "switch":
             var name = query.first { $0.name == "name" }?.value ?? ""

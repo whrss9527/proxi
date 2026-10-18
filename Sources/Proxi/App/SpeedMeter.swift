@@ -27,6 +27,7 @@ final class SpeedMeter: ObservableObject {
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.sampleSystem() }
             }
+            timer?.tolerance = 0.2
         }
         // 换了显示方式要重画菜单栏图标：网速本来就是 0 时 publish 不会通知，「不显示」以后还留着 0.00B。
         onUpdate?()

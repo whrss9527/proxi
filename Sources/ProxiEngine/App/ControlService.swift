@@ -589,6 +589,13 @@ final class ControlService: ObservableObject {
             text += L("；节点 %@，%@", node, state.config.engine.mode.title)
         }
         var result: [String: Any] = ["text": text, "proxy": proxy, "engine": core]
+        let navigation = SettingsWindowController.shared.navigation
+        result["interface"] = [
+            "settingsActive": navigation.windowVisible,
+            "settingsPage": navigation.page.rawValue,
+            "liveLogStreaming": engine.isLiveLogStreaming,
+            "speedHistoryPublishing": engine.isSpeedHistoryPublishing,
+        ] as [String: Any]
         var share: [String: Any] = ["enabled": state.share.enabled, "port": state.share.port]
         if case .listening = engine.shareStatus { share["listening"] = true }
         if let address = state.lanAddress { share["address"] = address.ip }

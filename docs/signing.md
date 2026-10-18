@@ -4,10 +4,11 @@
 
 1. 把证书导入一个临时钥匙串（`Scripts/import-certificate.sh`）；
 2. 用证书签名程序，带 hardened runtime 和安全时间戳（`Scripts/build-app.sh`）；
-3. 把三个 zip 提交苹果公证，通过后把票据钉到 `.app` 上再重新打包（`Scripts/notarize.sh`）；
-4. 算校验和、上传，Release 说明末尾注明「已用 Developer ID 签名并通过苹果公证」。
+3. 将通用包、两个精简包和可选扩展的 App 放入同一归档，共同提交一次公证；通过后钉票据，重新打包并再次解包验签、验票据和 Gatekeeper（`Scripts/notarize.sh`）；
+4. 固定候选 ZIP、源码提交、版本和摘要，在 Intel 与 Apple 芯片 runner 上下载同一份候选附件，分别严格验证通用包、本机精简包和扩展；
+5. 两个架构回执都与候选一致后上传草稿附件，再实际下载核对摘要，最后公开。失败不公开，也不覆盖已经发布的版本。
 
-用户下载这样的包，解压后双击就能打开，不会再被 Gatekeeper 拦下。没有配置时不发布（发布日志里会报错）：ad-hoc 签名的版本，已经装了签名版的用户没法一键更新到它。确实要发 ad-hoc 版本时，在 Actions 页面手动运行 release 工作流并勾上「允许 ad-hoc 签名」。
+没有 Developer ID 证书或公证凭据时停止发布；正式验证和发布均不接受 ad-hoc 签名。`dry_run` 使用同样的签名、公证和双架构验证，只保留 Actions 候选 artifact 和回执，不创建标签或 Release。
 
 下面是一次性的准备工作，大约半小时（不算苹果审核开发者账号的时间）。
 
@@ -63,10 +64,12 @@ A 和 B 填一组就行，两组都填时用 A。
 
 ## 五、发布
 
-Actions → release → Run workflow，填新的版本标签（比如 `v0.7.0`）。日志里：
+Actions → release → Run workflow，填未发布的版本标签（比如 `v0.17.0`）。默认 `dry_run` 开启；先验证候选，准备公开时再取消该选项。日志里：
 
 - 「导入签名证书」会显示证书名字，应该是 `Developer ID Application: …`；
-- 「提交苹果公证并钉上票据」通常几分钟，最后 `spctl` 显示 `source=Notarized Developer ID` 就成功了；没通过时会打印苹果给的公证日志，里面写着是哪个文件、什么原因。公证已通过、票据也钉上并核对过，只是发布机器上的 `spctl` 仍说 `Unnotarized Developer ID` 时（发布用的 macOS 机器上偶尔会这样），照常发布，日志里记一条警告。
+- 「共同公证、钉票据并验证最终 ZIP」必须 Accepted；票据网络错误 68 最多重试三次，其他错误立即停止。`Unnotarized Developer ID`、未知来源和签名错误均阻止发布，不能以 Accepted 或工作目录的票据代替最终 ZIP 验证。
+- 「下载验证」必须在两个架构均通过；回执绑定同一源码、版本、运行 attempt 和 ZIP 摘要。公证等待最多 20 分钟，构建公证 job 最多 45 分钟，双架构验证各最多 12 分钟，公开最多 5 分钟。
+- 瞬时失败后选择「重新运行所有作业」；候选与回执绑定同一 attempt，单独重跑失败 job 不会复用上一 attempt 的候选。ARM 门禁使用 macOS 26，Intel 使用 macOS 15，验证前设置临时 App 的 quarantine 并确认 Gatekeeper 已开启。
 
 ## 要知道的几件事
 

@@ -31,6 +31,30 @@ enum StatusIconState: Equatable {
     case error
 }
 
+/// 比较屏幕上真正显示的字样和外观，避免原始字节数略变就重新排版、提交菜单栏图像。
+struct StatusImageInput: Equatable {
+    var state: StatusIconState
+    var upload: String?
+    var download: String?
+    var textColor: CGColor?
+    var layout: SpeedLayout = .speedLeft
+    var appearance: String
+}
+
+@MainActor
+final class StatusImageUpdates {
+    private var previous: StatusImageInput?
+
+    func imageIfChanged(_ input: StatusImageInput) -> NSImage? {
+        guard input != previous else { return nil }
+        previous = input
+        if let upload = input.upload, let download = input.download, let color = input.textColor {
+            return StatusIcon.image(for: input.state, upload: upload, download: download, textColor: color, layout: input.layout)
+        }
+        return StatusIcon.image(for: input.state)
+    }
+}
+
 /// 菜单栏图标：一个“开关”造型，圆角轨道加圆形滑块，滑块在右表示开启。关闭时是模板图，跟随菜单栏的深浅色。
 /// 显示网速时把开关和两行小字合成一张图：按钮自己排版多行标题会让文字偏上，合成后两行文字的墨迹以开关的中线为中心。
 enum StatusIcon {

@@ -123,6 +123,11 @@ enum SidebarItem: Hashable {
 
 @MainActor
 final class SettingsNavigation: ObservableObject {
+    @Published private(set) var windowVisible = false
+
+    func setWindowVisible(_ visible: Bool) {
+        if visible != windowVisible { windowVisible = visible }
+    }
     // 跨窗口请求发出后保持用户点击的选中项，避免 List 先弹回原页再切到对方。
     @Published private(set) var requestedSidebarItem: SidebarItem?
     var sidebarItem: SidebarItem { requestedSidebarItem ?? .engine(page) }
@@ -153,8 +158,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     let navigation = SettingsNavigation()
     private var window: NSWindow?
-    private var handoff: SettingsWindowHandoff?
-    private var presentationRequest: UInt?
     private var otherShownObserver: NSObjectProtocol?
     private var becameActiveObserver: NSObjectProtocol?
 
@@ -169,7 +172,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             guard let self, let window = self.window, window.isVisible else { return }
             // 对方已经取得焦点并完成绘制，直接隐藏旧窗口，避免关闭动画露出桌面。
             window.orderOut(nil)
-            self.cancelHandoff()
+            self.updateActivity()
         }
     }
 
@@ -179,13 +182,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             navigation.page = page
         }
         if window == nil {
-            let created = makeWindow()
-            window = created
-            handoff = SettingsWindowHandoff(window: created) { [weak self] in
-                // 目标未能接手时，侧栏也恢复到仍然显示的本地页面。
-                self?.presentationRequest = nil
-                self?.navigation.didShow()
-            }
+            window = makeWindow()
         }
         // 从 Proxi 的设置窗口切过来时放在同一个位置、同样大小。
         if let window, !window.isVisible, let frame = SettingsWindowSync.savedFrame() {
@@ -195,8 +192,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // 先提交隐藏期间累积的页面布局，再把窗口交给 WindowServer。
         window?.contentView?.layoutSubtreeIfNeeded()
         window?.displayIfNeeded()
-        presentationRequest = handoff?.beginShowing()
         window?.makeKeyAndOrderFront(nil)
+        updateActivity()
         NSApp.activate(ignoringOtherApps: true)
         if let window {
             SettingsWindowSync.save(window.frame)
@@ -205,35 +202,30 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        updateActivity()
         announceWhenReady()
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) { updateActivity() }
+    func windowDidMiniaturize(_ notification: Notification) { updateActivity() }
+    func windowDidDeminiaturize(_ notification: Notification) { updateActivity() }
+
+    private func updateActivity() {
+        let visible = window?.isVisible == true && window?.isMiniaturized == false && !NSApp.isHidden && window?.occlusionState.contains(.visible) == true
+        let engine = AppState.shared.engine
+        engine.setSettingsWindowVisible(visible)
+        engine.setSpeedHistoryVisible(visible && navigation.page == .connections)
+        navigation.setWindowVisible(visible)
     }
 
     /// 激活是异步的；仅在窗口真正成为前台窗口且首帧画好后，才让另一边隐藏。
     private func announceWhenReady() {
-        guard let request = presentationRequest else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.presentationRequest == request else { return }
-            if self.handoff?.finishShowing(request, applicationIsActive: NSApp.isActive) == true {
-                self.presentationRequest = nil
-                SettingsWindowSync.announceShown()
-            } else if let window = self.window, window.isVisible, window.isKeyWindow, NSApp.isActive {
-                // 等显示服务器确认显现；不是用固定延时猜测目标窗口已经画好。
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 120) { [weak self] in
-                    guard self?.presentationRequest == request else { return }
-                    self?.announceWhenReady()
-                }
-            }
+            guard let window = self?.window, window.isVisible, window.isKeyWindow, NSApp.isActive else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            SettingsWindowSync.announceShown()
         }
-    }
-
-    func prepareToHandOff() {
-        presentationRequest = nil
-        handoff?.freeze()
-    }
-
-    func cancelHandoff() {
-        presentationRequest = nil
-        handoff?.cancel()
     }
 
     func windowDidMove(_ notification: Notification) {
@@ -251,7 +243,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        cancelHandoff()
+        AppState.shared.engine.setSettingsWindowVisible(false)
+        navigation.setWindowVisible(false)
         NSApp.setActivationPolicy(.accessory)
     }
 
@@ -315,6 +308,10 @@ struct SettingsRootView: View {
         // 两个进程的设置共同组成一个界面；交接焦点时控件不应先变灰再恢复。
         // 仅固定视觉状态，不改变窗口的真实焦点、键盘事件或应用激活权限。
         .environment(\.appearsActive, true)
+        .environment(\.settingsWindowVisible, navigation.windowVisible)
+        .onChange(of: navigation.windowVisible && navigation.page == .connections, initial: true) { _, visible in
+            state.engine.setSpeedHistoryVisible(visible)
+        }
         // 把配置文件拖进窗口就导入（先预览）。
         .onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
@@ -333,7 +330,6 @@ struct SettingsRootView: View {
     private var sidebarSelection: Binding<SidebarItem?> {
         Binding(get: { navigation.sidebarItem }, set: { item in
             guard let item else { return }
-            SettingsWindowController.shared.cancelHandoff()
             navigation.select(item)
             switch item {
             case .engine: break
@@ -353,6 +349,17 @@ struct SettingsRootView: View {
         case .advanced: AdvancedPage(state: state, engine: state.engine, navigation: navigation)
         case .core: CorePage(state: state, core: state.core, engine: state.engine)
         }
+    }
+}
+
+private struct SettingsWindowVisibleKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var settingsWindowVisible: Bool {
+        get { self[SettingsWindowVisibleKey.self] }
+        set { self[SettingsWindowVisibleKey.self] = newValue }
     }
 }
 

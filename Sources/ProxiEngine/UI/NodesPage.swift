@@ -341,9 +341,21 @@ struct NodesPage: View {
                 .foregroundStyle(.secondary)
         }
         .task {
-            while !Task.isCancelled {
-                logText = engine.logTail
-                try? await Task.sleep(for: .seconds(2))
+            // 直接监听发布者：隐藏的 NSHostingView 即使暂不计算 body，也能取消刷新任务。
+            var refresh: Task<Void, Never>?
+            defer { refresh?.cancel() }
+            for await visible in navigation.$windowVisible.removeDuplicates().values {
+                refresh?.cancel()
+                refresh = nil
+                guard visible, !Task.isCancelled else { continue }
+                refresh = Task { @MainActor in
+                    while !Task.isCancelled {
+                        let text = engine.logTail
+                        if text != logText { logText = text }
+                        do { try await Task.sleep(for: .seconds(2)) }
+                        catch { return }
+                    }
+                }
             }
         }
     }

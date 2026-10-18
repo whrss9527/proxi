@@ -1,96 +1,85 @@
 name: release
 
-# 推送 v* 标签时：跑单元测试，打包通用二进制的 Proxi.app（版本号取自标签），
-# 用 CHANGELOG.md 里对应版本的内容创建 GitHub Release 并上传 zip 和校验和。
-# 改名前的版本（ProxySwitch）的一键更新按 ProxySwitch-macos*.zip 找安装包，所以同样的包再用旧名字各传一份。
-# Release 先以草稿创建，附件上传完才发布。标签在测试、打包、公证都成功以后才推上去：中途失败不会留下一个没有发布的标签。
-# 也可以在 Actions 页面手动运行：填一个标签名，标签不存在时在所选分支的最新提交上创建并推送，存在时重新上传附件。
-# CI 在合并进 main、发现 CHANGELOG.md 最上面的版本还没有标签时，也会调用这里自动发布（见 ci.yml 的「发布新版本」）。
-# 仓库的 Secrets 里配了 Developer ID 证书和公证凭据时（见 docs/signing.md），用证书签名并提交苹果公证，
-# 用户下载后双击就能打开。没配证书时不发布（ad-hoc 签名的版本装不上：一键更新要求和装着的程序是同一个开发者签名的），
-# 手动运行时勾上「允许 ad-hoc 签名」才发。
+# 构建/共同公证 → 两种芯片下载同一候选 ZIP 验证 → 公开；任何门禁失败都不发布。
+# dry_run 只生成候选归档与验证回执，不创建标签或 Release。
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的标签，例如 v0.1.0；不存在时在当前分支的最新提交上创建"
+        description: "未发布的版本标签，例如 v0.17.0；不能覆盖已公开版本"
         required: true
         type: string
-      allow_adhoc:
-        description: "没配签名证书时也发布（ad-hoc 签名，已经装了开发者签名版本的用户没法一键更新到它）"
+      dry_run:
+        description: "只正式签名、公证并验证候选包，不创建标签或 Release"
         required: false
         type: boolean
-        default: false
+        default: true
   workflow_call:
     inputs:
       tag:
-        description: "要发布的标签，例如 v0.8.0"
         required: true
         type: string
       ref:
-        description: "在哪个提交上发布（标签不存在时在它上面创建）"
         required: true
         type: string
+      dry_run:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+# 覆盖整个流水线，避免另一个版本在两个验证 job 之间开始发布。
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  release:
-    name: 打包并发布
+  build:
+    name: 签名与共同公证
     runs-on: macos-15
-    # 同一时间只发一个版本（手动推标签和合并后自动发布可能撞在一起）。
-    concurrency:
-      group: release
-      cancel-in-progress: false
+    timeout-minutes: 45
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
-      - name: 确定要发布的提交
+          ref: ${{ inputs.ref || github.sha }}
+      - name: 确认候选版本和源码
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "标签 $TAG 已存在，在它上面发布"
-            git fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
-            git checkout -q "$TAG"
-          else
-            echo "标签 $TAG 不存在，在 $(git rev-parse --short HEAD) 上发布，发布前再推标签"
-            git tag "$TAG"
-            echo "PUSH_TAG=1" >> "$GITHUB_ENV"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::版本标签格式不对"; exit 1; }
+          state=$(python3 Scripts/ci/release-state.py "$GITHUB_REPOSITORY" "$TAG")
+          if [ "$state" = "published" ]; then
+            echo "::error::$TAG 已公开，禁止覆盖附件"; exit 1
           fi
-      - name: 选择最新的 Xcode
-        run: |
-          latest=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
-          sudo xcode-select -s "$latest"
-          swift --version
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+            [ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ] || { echo "::error::标签与候选源码不同"; exit 1; }
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: 选择 Xcode
+        run: bash Scripts/ci/select-xcode.sh
       - name: 单元测试
         run: swift test
-      - name: 导入签名证书
+      - name: 导入 Developer ID 证书
         env:
           CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          ALLOW_ADHOC: ${{ inputs.allow_adhoc }}
         run: |
-          if [ -z "$CERTIFICATE_P12_BASE64" ]; then
-            if [ "$ALLOW_ADHOC" = "true" ]; then
-              echo "::warning::没有配置 MACOS_CERTIFICATE_P12：这次用 ad-hoc 签名、不公证，用户第一次打开会被系统拦下。配置方法见 docs/signing.md"
-              exit 0
-            fi
-            echo "::error::没有配置 MACOS_CERTIFICATE_P12，不发布：ad-hoc 签名的版本，已经装了开发者签名版本的用户没法一键更新到它。配置方法见 docs/signing.md；确实要发 ad-hoc 版本时手动运行这个工作流并勾上「允许 ad-hoc 签名」。"
-            exit 1
-          fi
+          [ -n "$CERTIFICATE_P12_BASE64" ] || { echo "::error::未配置 Developer ID 证书，不能验证正式发行包"; exit 1; }
           Scripts/import-certificate.sh
-      - name: 打包通用二进制的 .app 和单架构的精简包
-        run: |
-          VERSION="${TAG#v}" THIN_ARCHIVES=1 Scripts/build-app.sh
-          ls -la dist/*.zip
-      - name: 提交苹果公证并钉上票据
-        if: env.CODESIGN_IDENTITY != ''
+      - name: 打包通用和精简归档
+        run: VERSION="${TAG#v}" THIN_ARCHIVES=1 Scripts/build-app.sh
+      - name: 共同公证、钉票据并验证最终 ZIP
         env:
           NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
@@ -99,47 +88,90 @@ jobs:
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
         run: Scripts/notarize.sh dist/Proxi-macos.zip dist/Proxi-macos-arm64.zip dist/Proxi-macos-x86_64.zip "dist/Proxi-Engine-${TAG#v}.zip"
-      - name: 旧名字的副本和校验和
+      - name: 固定候选附件及摘要
         run: |
-          cd dist
-          # 旧版本的一键更新找这几个名字：它把新程序原地装在 ProxySwitch.app，新程序第一次启动时把自己改名为 Proxi.app。
-          for arch in "" -arm64 -x86_64; do
-            cp "Proxi-macos${arch}.zip" "ProxySwitch-macos${arch}.zip"
-          done
-          # 可选扩展的程序也列上：Proxi 开启扩展时按这里的校验和核对。
-          shasum -a 256 Proxi-macos.zip Proxi-macos-arm64.zip Proxi-macos-x86_64.zip ProxySwitch-macos.zip ProxySwitch-macos-arm64.zip ProxySwitch-macos-x86_64.zip "Proxi-Engine-${TAG#v}.zip" > SHA256SUMS.txt && cat SHA256SUMS.txt
-          ls -la *.zip
-      - name: 发布
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${TAG#v}"
-          # 只认标题正好是这个版本的那一节（「## 0.14.1（」不会匹配到「## 0.14.10（」）。
-          awk -v header="## ${VERSION}（" '/^## /{ if (printing) exit; if (index($0, header) == 1) { printing = 1; next } } printing' CHANGELOG.md > notes.md
-          [ -s notes.md ] || { echo "::error::CHANGELOG.md 里没有 ${VERSION} 这一节"; exit 1; }
-          # 发布说明里不写可选扩展的内容（CI 也检查 CHANGELOG 最上面一节）。
-          if grep -qiE '代理引擎|Proxi-Engine|mihomo|内核|机场|翻墙|科学上网|GFW|VPN|netflix|youtube|chatgpt|telegram|流媒体' notes.md; then
-            echo "::error::发布说明里不该出现这些词"; cat notes.md; exit 1
-          fi
-          if [ -n "${CODESIGN_IDENTITY:-}" ]; then
-            printf '\n已用 Developer ID 签名并通过苹果公证，下载解压后双击就能打开。\n' >> notes.md
-          fi
-          if [ "${PUSH_TAG:-}" = "1" ]; then
-            git push origin "refs/tags/$TAG"
-          fi
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --draft --verify-tag --title "Proxi $TAG" --notes-file notes.md
-          fi
-          gh release upload "$TAG" dist/Proxi-macos.zip dist/Proxi-macos-arm64.zip dist/Proxi-macos-x86_64.zip \
-            dist/ProxySwitch-macos.zip dist/ProxySwitch-macos-arm64.zip dist/ProxySwitch-macos-x86_64.zip "dist/Proxi-Engine-${VERSION}.zip" dist/SHA256SUMS.txt --clobber
-          # 只有比已经发布的版本都新才标成「最新」：重新上传旧版本的附件时不能让它变成最新版，不然一键更新会退回去。
-          newest=$(gh release list --exclude-drafts --limit 100 --json tagName --jq '.[].tagName' | { cat; echo "$TAG"; } | sort -V | tail -1)
-          if [ "$newest" = "$TAG" ]; then
-            gh release edit "$TAG" --draft=false --latest
-          else
-            gh release edit "$TAG" --draft=false --latest=false
-          fi
-          echo "已发布到 https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG"
+          for suffix in "" -arm64 -x86_64; do cp "dist/Proxi-macos${suffix}.zip" "dist/ProxySwitch-macos${suffix}.zip"; done
+          (cd dist && shasum -a 256 Proxi-macos.zip Proxi-macos-arm64.zip Proxi-macos-x86_64.zip ProxySwitch-macos.zip ProxySwitch-macos-arm64.zip ProxySwitch-macos-x86_64.zip "Proxi-Engine-${TAG#v}.zip" > SHA256SUMS.txt)
+          team=$(codesign -dvv dist/Proxi.app 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          python3 Scripts/ci/release-integrity.py candidate --directory dist --tag "$TAG" --source-sha "$(git rev-parse HEAD)" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --team-id "$team"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxi-release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+            dist/release-candidate.json
+          if-no-files-found: error
+          retention-days: 7
       - name: 删除临时钥匙串
         if: always() && env.CODESIGN_KEYCHAIN != ''
         run: security delete-keychain "$CODESIGN_KEYCHAIN" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proxi-notary-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/proxi-notary.*/submit.json
+            ${{ runner.temp }}/proxi-notary.*/wait.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  verify:
+    name: 下载验证（${{ matrix.architecture }}）
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-26
+          - architecture: x86_64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxi-release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate
+      - name: 验证最终附件的签名、票据和 Gatekeeper
+        env:
+          RELEASE_SOURCE_SHA: ${{ needs.build.outputs.sha }}
+          RELEASE_RECEIPTS_DIR: ${{ runner.temp }}/release-receipts
+        run: bash Scripts/ci/verify-release-archives.sh candidate "${TAG#v}" "${{ matrix.architecture }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxi-release-receipt-${{ matrix.architecture }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-receipts/${{ matrix.architecture }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: 公开已验证附件
+    needs: [build, verify]
+    if: ${{ inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxi-release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: proxi-release-receipt-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: receipts
+          merge-multiple: true
+      - name: 核对两架构回执并公开
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_SHA: ${{ needs.build.outputs.sha }}
+        run: bash Scripts/ci/publish-release.sh candidate receipts

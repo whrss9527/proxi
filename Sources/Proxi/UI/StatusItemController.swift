@@ -7,12 +7,12 @@ import SwiftUI
 final class StatusItemController: NSObject {
     private let state: AppState
     private let statusItem: NSStatusItem
-    private var imageCache = StatusImageCache<NSImage>()
-    private var appearanceObserver: NSKeyValueObservation?
     private var panel: PanelWindow?
     private var hostingView: NSHostingView<PanelView>?
     private var keyObserver: Any?
     private var cancellables = Set<AnyCancellable>()
+    private let imageUpdates = StatusImageUpdates()
+    private var appearanceObservation: NSKeyValueObservation?
 
     init(state: AppState) {
         self.state = state
@@ -23,7 +23,7 @@ final class StatusItemController: NSObject {
             button.action = #selector(statusItemClicked(_:))
             _ = button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.imagePosition = .imageOnly
-            appearanceObserver = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            appearanceObservation = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
                 Task { @MainActor in self?.updateSpeedLabel() }
             }
         }
@@ -48,26 +48,26 @@ final class StatusItemController: NSObject {
     private func updateSpeedLabel() {
         guard let button = statusItem.button else { return }
         let meter = state.speed
-        let iconState = self.iconState
-        let layout = SpeedLayout.resolve(side: state.config.speedSide, state: iconState)
-        var textColor = labelColor(for: button)
-        if state.config.speedColorFollowsStatus, let accent = StatusIcon.speedTextColor(for: iconState, darkMenuBar: isDark(button)) {
-            textColor = accent.cgColor
-        }
-        let key = StatusImageKey(state: iconState,
-                                 upload: meter.mode == .none ? nil : SpeedFormatter.compact(bytesPerSecond: meter.upload),
-                                 download: meter.mode == .none ? nil : SpeedFormatter.compact(bytesPerSecond: meter.download),
-                                 layout: layout, textColor: textColor, appearance: button.effectiveAppearance.name.rawValue)
-        let image = imageCache.image(for: key) {
-            if let upload = key.upload, let download = key.download {
-                return StatusIcon.image(for: iconState, upload: upload, download: download, textColor: textColor, layout: layout)
+        var input = StatusImageInput(state: iconState, appearance: button.effectiveAppearance.name.rawValue)
+        if meter.mode == .none {
+            input.upload = nil
+            input.download = nil
+        } else {
+            let iconState = self.iconState
+            let layout = SpeedLayout.resolve(side: state.config.speedSide, state: iconState)
+            var textColor = labelColor(for: button)
+            if state.config.speedColorFollowsStatus, let accent = StatusIcon.speedTextColor(for: iconState, darkMenuBar: isDark(button)) {
+                textColor = accent.cgColor
             }
-            return StatusIcon.image(for: iconState)
+            input.upload = SpeedFormatter.compact(bytesPerSecond: meter.upload)
+            input.download = SpeedFormatter.compact(bytesPerSecond: meter.download)
+            input.textColor = textColor
+            input.layout = layout
         }
-        if button.image !== image { button.image = image }
-        button.imagePosition = .imageOnly
+        if let image = imageUpdates.imageIfChanged(input) { button.image = image }
         // 提示里的网速跟着图标一起更新。
-        button.toolTip = tooltip + (meter.mode == .none ? "" : "\n↑ \(SpeedFormatter.full(bytesPerSecond: meter.upload))  ↓ \(SpeedFormatter.full(bytesPerSecond: meter.download))")
+        let text = tooltip + (meter.mode == .none ? "" : "\n↑ \(SpeedFormatter.full(bytesPerSecond: meter.upload))  ↓ \(SpeedFormatter.full(bytesPerSecond: meter.download))")
+        if button.toolTip != text { button.toolTip = text }
     }
 
     /// 菜单栏现在是不是深色（深色模式，或者浅色模式下被桌面衬成深色）。
@@ -151,6 +151,11 @@ final class StatusItemController: NSObject {
             SettingsWindowController.shared.show(page: page)
         case .panel:
             openPanel()
+        case .networkMonitor:
+            closePanel()
+            NetworkMonitorWindowController.shared.show()
+        case .closeNetworkMonitor:
+            NetworkMonitorWindowController.shared.close()
         case .update:
             SettingsWindowController.shared.show(page: .about)
             Task { await state.updater.checkAndInstall() }
@@ -222,6 +227,7 @@ final class StatusItemController: NSObject {
         if state.persisted.extensionState.enabled {
             menu.addItem(item(L("代理引擎设置…"), action: #selector(menuEngineSettings), key: ""))
         }
+        menu.addItem(item(L("网络监控…"), action: #selector(menuNetworkMonitor), key: ""))
         menu.addItem(item(L("设置…"), action: #selector(menuSettings), key: ","))
         menu.addItem(item(L("退出 Proxi"), action: #selector(menuQuit), key: "q"))
         statusItem.menu = menu
@@ -248,6 +254,7 @@ final class StatusItemController: NSObject {
     @objc private func menuTurnOff() { state.turnOff() }
     @objc private func menuSaveExternal() { state.saveExternalAsProfile() }
     @objc private func menuSettings() { SettingsWindowController.shared.show(page: nil) }
+    @objc private func menuNetworkMonitor() { NetworkMonitorWindowController.shared.show() }
     @objc private func menuEngineSettings() { state.extensions.showSettings() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
 
@@ -284,6 +291,12 @@ final class StatusItemController: NSObject {
                     MainActor.assumeIsolated {
                         self?.closePanel()
                         SettingsWindowController.shared.show(page: page)
+                    }
+                },
+                openNetworkMonitor: { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.closePanel()
+                        NetworkMonitorWindowController.shared.show()
                     }
                 },
                 openEngineSettings: { [weak self] in

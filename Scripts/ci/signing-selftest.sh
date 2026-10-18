@@ -44,7 +44,7 @@ pgrep -x Proxi >/dev/null || { echo "用证书签名的程序没有在运行"; e
 stop_app Proxi
 security delete-keychain "$keychain"
 # 公证脚本的流程：用假的 xcrun（只模拟 notarytool 和 stapler）和假的 spctl 走一遍通过、没通过、没有凭据，
-# 以及公证通过但系统检查说没公证（照常发布、记警告）、系统检查因为别的原因不通过（失败）。
+# 以及公证通过但 Gatekeeper 不认可（失败）、系统检查因为别的原因不通过（失败）。
 fake="$work/fakebin"
 mkdir -p "$fake"
 cat > "$fake/xcrun" <<'EOF'
@@ -59,6 +59,7 @@ esac
 EOF
 cat > "$fake/spctl" <<'EOF'
 #!/bin/bash
+if [ "$1" = "--status" ]; then echo "assessments enabled"; exit 0; fi
 case "${FAKE_SPCTL:-accepted}" in
   accepted) echo "${@: -1}: accepted"; echo "source=Notarized Developer ID" ;;
   unnotarized) echo "${@: -1}: rejected" >&2; echo "source=Unnotarized Developer ID" >&2; exit 3 ;;
@@ -75,11 +76,11 @@ if PATH="$fake:$PATH" FAKE_NOTARY_STATUS=Invalid NOTARY_APPLE_ID=ci@example.com 
   cat "$work/invalid.log"; echo "公证没通过时脚本应该失败"; exit 1
 fi
 grep -q "fake notary issue" "$work/invalid.log" || { cat "$work/invalid.log"; echo "公证没通过时没有打印苹果的日志"; exit 1; }
-if ! PATH="$fake:$PATH" FAKE_SPCTL=unnotarized SPCTL_TRIES=2 SPCTL_INTERVAL=1 NOTARY_APPLE_ID=ci@example.com NOTARY_PASSWORD=x NOTARY_TEAM_ID=ABCDE12345 \
+if PATH="$fake:$PATH" FAKE_SPCTL=unnotarized SPCTL_TRIES=2 SPCTL_INTERVAL=1 NOTARY_APPLE_ID=ci@example.com NOTARY_PASSWORD=x NOTARY_TEAM_ID=ABCDE12345 \
     Scripts/notarize.sh "$work/test.zip" > "$work/unnotarized.log" 2>&1; then
-  cat "$work/unnotarized.log"; echo "公证通过、只是系统检查说没公证时应该照常发布"; exit 1
+  cat "$work/unnotarized.log"; echo "Gatekeeper 不认可时必须阻止发布"; exit 1
 fi
-grep -q "::warning::" "$work/unnotarized.log" || { cat "$work/unnotarized.log"; echo "系统检查说没公证时没有记警告"; exit 1; }
+grep -q "禁止发布" "$work/unnotarized.log" || { cat "$work/unnotarized.log"; echo "没有保留 Gatekeeper 失败原因"; exit 1; }
 if PATH="$fake:$PATH" FAKE_SPCTL=other SPCTL_TRIES=2 SPCTL_INTERVAL=1 NOTARY_APPLE_ID=ci@example.com NOTARY_PASSWORD=x NOTARY_TEAM_ID=ABCDE12345 \
     Scripts/notarize.sh "$work/test.zip" > "$work/rejected.log" 2>&1; then
   cat "$work/rejected.log"; echo "系统检查因为别的原因不通过时脚本应该失败"; exit 1
