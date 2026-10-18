@@ -154,6 +154,8 @@ final class AppState: ObservableObject {
             if error { Log.error(message) } else { Log.info(message) }
         }
         snapshot = backend.currentSystemProxy()
+        // 旧记录只有 enabled 标记；在配置变化前固定当时的已接管范围，不能随新配置重新推断。
+        if self.persisted.appliedTargets == nil { self.persisted.appliedTargets = appliedTargets }
         guard persists else { return }
         $config
             .dropFirst()

@@ -111,14 +111,14 @@ final class ConfigurationTransactionTests: XCTestCase {
         }
     }
 
-    private func makeState(_ backend: Backend, passwordAccess: AppState.PasswordAccess? = nil) -> AppState {
+    private func makeState(_ backend: Backend, passwordAccess: AppState.PasswordAccess? = nil, persisted: PersistedState = PersistedState()) -> AppState {
         let profile = Profile(name: "公司代理", color: "#2563eb", host: "a.corp.example", port: 3128, targets: [.environment, .git])
         var config = AppConfig()
         config.profiles = [profile]
         config.notifyLevel = .none
         config.healthCheck = false
         config.offMode = .restore
-        return AppState(config: config, persisted: PersistedState(), backend: backend, persists: false,
+        return AppState(config: config, persisted: persisted, backend: backend, persists: false,
                         passwordAccess: passwordAccess, operationLog: { _, _ in })
     }
 
@@ -494,6 +494,44 @@ final class ConfigurationTransactionTests: XCTestCase {
         XCTAssertNil(state.persisted.originalScopes.environment)
         XCTAssertNil(state.persisted.originalScopes.git)
         XCTAssertNotNil(state.lastError)
+    }
+
+
+    func testLegacyOwnershipIsFixedBeforeEarlyScopeEditOrDeletion() async throws {
+        for delete in [false, true] {
+            let backend = Backend()
+            var persisted = PersistedState()
+            persisted.enabledByUs = true
+            XCTAssertNil(persisted.appliedTargets)
+            let state = makeState(backend, persisted: persisted)
+            let profile = try XCTUnwrap(state.selectedProfile)
+            let entered = expectation(description: "旧记录的后台写入挂起")
+            backend.arm(entered)
+            state.turnOn(profile, askForPassword: false)
+            // 后台Task尚未开始，先改变配置；旧范围不能因此变成新范围或空列表。
+            if delete { state.remove(profile) }
+            else {
+                var updated = profile
+                updated.targets = [.git]
+                state.update(updated)
+            }
+            await fulfillment(of: [entered], timeout: 3)
+            XCTAssertEqual(backend.captureCount(.environment), 0, "不能把旧版本自己的代理当成开启前原值")
+            let done = completion(state)
+            backend.release()
+            await fulfillment(of: [done], timeout: 3)
+            XCTAssertEqual(backend.values(.environment), [:])
+            XCTAssertNil(state.persisted.originalScopes.environment)
+            XCTAssertNil(state.persisted.originalScopes.git)
+            XCTAssertEqual(backend.captureCount(.git), 0)
+            if !delete {
+                let off = completion(state)
+                state.turnOff()
+                await fulfillment(of: [off], timeout: 3)
+            }
+            XCTAssertEqual(backend.values(.git), [:])
+            XCTAssertFalse(state.persisted.enabledByUs)
+        }
     }
 
 }
