@@ -87,3 +87,12 @@ CODESIGN_IDENTITY="Developer ID Application: 你的名字 (团队 ID)" VERSION=0
 NOTARY_APPLE_ID=… NOTARY_PASSWORD=… NOTARY_TEAM_ID=… \
   Scripts/notarize.sh dist/Proxi-macos.zip dist/Proxi-macos-arm64.zip dist/Proxi-macos-x86_64.zip
 ```
+
+
+### 草稿状态与 ID
+
+发布器先验证候选七归档、源码/运行身份与两份原生回执。已有草稿保留查询得到的 ID；新草稿通过 REST 创建并验证响应中的正整数 ID、标签和 draft 状态，随后按 ID 查询，不依赖刚创建后标签/列表索引是否可见。原有完整分页与异常 Link 检查保留。
+
+上传附件与公开前均按同一 ID 确认仍为草稿，并检查 GitHub CLI 实际解析到相同的 apiUrl/标签。API 不明、ID 或标签变化、已公开状态均停止；公开后再次按 ID 确认结果。标签仍必须指向候选源码，实际下载附件必须符合 canonical 摘要，公开版本不可覆盖。
+
+恢复已有草稿时使用原标签对应的源码和现有手动发行入口，重新通过签名、公证与两架构下载门禁；原失败保留。不能通过修改原标签、替换公开附件或忽略状态检查恢复。
