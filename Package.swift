@@ -7,21 +7,24 @@ import PackageDescription
 let package = Package(
     name: "Proxi",
     platforms: [.macOS(.v14)],
-    dependencies: [.package(path: "Packages/ProxiProcess")],
+    dependencies: [
+        .package(path: "Packages/ProxiProcess"),
+        .package(url: "https://github.com/whrss9527/Frit", exact: "0.1.0"),
+    ],
     targets: [
         .executableTarget(
             name: "Proxi",
-            dependencies: ["ProxiProcess"],
+            dependencies: ["ProxiProcess", .product(name: "FritCore", package: "Frit")],
             path: "Sources/Proxi"
         ),
         .executableTarget(
             name: "ProxiEngine",
-            dependencies: ["ProxiProcess"],
+            dependencies: ["ProxiProcess", .product(name: "FritCore", package: "Frit")],
             path: "Sources/ProxiEngine"
         ),
         .testTarget(
             name: "ProxiTests",
-            dependencies: ["Proxi"],
+            dependencies: ["Proxi", .product(name: "FritCore", package: "Frit")],
             path: "Tests/ProxiTests"
         ),
         .testTarget(

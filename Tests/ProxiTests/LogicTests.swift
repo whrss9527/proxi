@@ -1,3 +1,4 @@
+import FritCore
 import XCTest
 @testable import Proxi
 
@@ -205,18 +206,6 @@ final class ParsingTests: XCTestCase {
         XCTAssertEqual(NetworkServices.select(services: services) { _ in false }, ["Wi-Fi", "Thunderbolt Bridge", "Remote Access"])
     }
 
-    func testVersionCompare() {
-        XCTAssertTrue(UpdateChecker.isNewer("1.2.0", than: "1.1.9"))
-        XCTAssertTrue(UpdateChecker.isNewer("1.2", than: "1.1.9"))
-        XCTAssertFalse(UpdateChecker.isNewer("1.1.9", than: "1.1.9"))
-        XCTAssertFalse(UpdateChecker.isNewer("0.9", than: "1.0"))
-        XCTAssertTrue(UpdateChecker.isNewer("v0.2.0", than: "0.1.9"))
-        // 预发布版本比同号的正式版本旧，但比更早的正式版本新。
-        XCTAssertTrue(UpdateChecker.isNewer("0.2.0-beta.1", than: "0.1.1"))
-        XCTAssertFalse(UpdateChecker.isNewer("0.2.0-beta.1", than: "0.2.0"))
-        XCTAssertTrue(UpdateChecker.isNewer("0.2.0", than: "0.2.0-beta.1"))
-    }
-
     func testReleaseParse() throws {
         let json = """
         {"tag_name":"v0.2.0","html_url":"https://github.com/whrss9527/proxi/releases/tag/v0.2.0",
@@ -301,7 +290,7 @@ final class ParsingTests: XCTestCase {
             XCTAssertNotNil(release.date, release.version)
             XCTAssertFalse(release.notes.isEmpty, release.version)
         }
-        XCTAssertEqual(releases.map(\.version), releases.sorted { UpdateChecker.isNewer($0.version, than: $1.version) }.map(\.version))
+        XCTAssertEqual(releases.map(\.version), releases.sorted { AppVersion.isNewer($0.version, than: $1.version) }.map(\.version))
     }
 
     func testChecksums() throws {
