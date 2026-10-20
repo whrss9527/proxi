@@ -180,26 +180,4 @@ enum UpdateChecker {
             checksumsURL: (asset(named: checksumsName)?["browser_download_url"] as? String).flatMap(URL.init(string:))
         )
     }
-
-    /// 比较版本号：first 比 second 新返回 true。数字逐段比较；带 -beta 之类后缀的预发布版本比同号的正式版本旧。
-    static func isNewer(_ first: String, than second: String) -> Bool {
-        let a = components(first)
-        let b = components(second)
-        for index in 0..<max(a.numbers.count, b.numbers.count) {
-            let x = index < a.numbers.count ? a.numbers[index] : 0
-            let y = index < b.numbers.count ? b.numbers[index] : 0
-            if x != y { return x > y }
-        }
-        return !a.prerelease && b.prerelease
-    }
-
-    private static func components(_ version: String) -> (numbers: [Int], prerelease: Bool) {
-        var text = version.trimmingCharacters(in: .whitespaces)
-        if text.hasPrefix("v") || text.hasPrefix("V") {
-            text.removeFirst()
-        }
-        let parts = text.split(separator: "-", maxSplits: 1)
-        let numbers = (parts.first ?? "").split(separator: ".").map { Int($0) ?? 0 }
-        return (numbers, parts.count > 1)
-    }
 }

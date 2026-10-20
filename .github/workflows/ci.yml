@@ -43,6 +43,9 @@ jobs:
       - name: 异步进程与服务并发测试
         shell: bash
         run: swift test --package-path Packages/ProxiProcess -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors | tee "$RUNNER_TEMP/test-process.log"
+      - name: 公共版本比较测试
+        shell: bash
+        run: swift test --package-path .build/checkouts/Frit --filter AppVersionTests | tee "$RUNNER_TEMP/test-frit-version.log"
       - name: 安装 fish
         run: bash Scripts/ci/install-fish.sh
       - name: 单元测试
