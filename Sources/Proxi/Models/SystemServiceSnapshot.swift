@@ -29,6 +29,16 @@ struct SystemServiceSettings: Equatable, Sendable {
 
     var snapshot: ProxySnapshot { ProxySnapshot(dictionary: dictionary ?? [:]) }
 
+    /// 二进制 plist 的键顺序不影响设置；未知字段和协议开关都参与比较。
+    func matches(configuration current: [String: Any]?, protocolEnabled: Bool) -> Bool {
+        guard self.protocolEnabled == protocolEnabled else { return false }
+        switch (dictionary, current) {
+        case (nil, nil): return true
+        case (let saved?, let current?): return NSDictionary(dictionary: saved).isEqual(to: current)
+        default: return false
+        }
+    }
+
     func backup(storeSecret: (String, UUID) throws -> Void = { try ProxyKeychain.set($0, for: $1) }) throws -> SystemServiceBackup {
         let values = ["configuration": configuration.map { [$0.base64EncodedString()] } ?? [], "enabled": [protocolEnabled ? "1" : "0"]]
         let original = try ProxyScopeSnapshot.protected(values, display: ["proxy": [Redact.secrets(snapshot.summary)]], storeSecret: storeSecret)
