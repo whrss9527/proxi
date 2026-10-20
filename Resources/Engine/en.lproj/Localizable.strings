@@ -304,7 +304,6 @@
 "DNS 服务器不能为空" = "DNS server can't be empty";
 "「%@」里不能有空格、逗号或引号" = "“%@” can't contain spaces, commas or quotes";
 "「%@」的协议不认识：支持 udp、tcp、tls、https、quic、dhcp" = "Unknown protocol in “%@”: udp, tcp, tls, https, quic and dhcp are supported";
-"「%@」没有写服务器地址" = "“%@” has no server address";
 "「%@」不是 IP：域名形式的服务器要写成 https://… 或 tls://…" = "“%@” isn't an IP: servers given as domains must be written as https://… or tls://…";
 "认不出域名「%@」" = "Can't recognize the domain “%@”";
 "「%@」没有填 DNS 服务器" = "“%@” has no DNS server";
@@ -917,9 +916,6 @@
 "https://1.1.1.1/dns-query（留空不用）" = "https://1.1.1.1/dns-query (leave empty to skip)";
 "备用 DNS 经「节点」查询" = "Query Fallback DNS Through “Node”";
 "解析 DNS 服务器用的 IP" = "IPs for Resolving DNS Servers";
-"按域名指定 DNS" = "DNS per Domain";
-"加" = "Add";
-"公司内网、家里的 NAS 这类域名交给指定的 DNS；+.example.com 连同子域名。" = "Send domains such as a company intranet or a home NAS to a specific DNS; +.example.com includes subdomains.";
 "恢复默认" = "Restore Defaults";
 "域名，比如 nas.lan、*.test.com" = "Domain, e.g. nas.lan, *.test.com";
 "IP（多个用逗号分开）或者另一个域名" = "IP (separate several with commas) or another domain";
@@ -1395,3 +1391,12 @@
 "预览导入会改动什么，不会真的改。内容可以是代理引擎的配置描述（JSON）、mihomo 的 YAML、其他常见格式的配置、节点链接或规则列表；也可以给网址。" = "Preview what an import would change without changing anything. The content can be an engine config description (JSON), mihomo YAML, configs in other common formats, node links or rule lists; a URL also works.";
 "（在 Proxi 里开启「代理引擎」这个配置后生效）" = " (takes effect when the “Proxy Engine” profile is turned on in Proxi)";
 "，本机端口 %@" = ", local port %@";
+"域名 DNS 映射" = "Domain DNS mappings";
+"添加映射…" = "Add Mapping…";
+"删除映射" = "Delete Mapping";
+"例如 example.com → 223.5.5.5；没有映射的域名继续使用上面的 DNS 设置。" = "For example, example.com → 223.5.5.5. Domains without a mapping keep using the DNS settings above.";
+"启用上方 DNS 并点击「应用」后生效。映射仅用于代理引擎在本机执行的域名解析；由远端节点或浏览器自行解析的域名不受此设置控制。" = "Enable DNS above and click Apply to activate mappings. They apply to DNS lookups performed locally by the engine. Lookups performed by a remote node or by the browser itself are outside their scope.";
+"example.com 只匹配该域名；+.example.com 包含该域名和所有子域名；*.example.com 只匹配一级子域名。不要填写 https:// 或网页路径。" = "example.com matches only that domain; +.example.com includes the domain and all subdomains; *.example.com matches one level of subdomains. Do not enter https:// or a web page path.";
+"支持 IP、带端口的 IP、https://（DoH）、tls://（DoT）等 DNS 地址；多个服务器用逗号或换行分隔。" = "Supports IP addresses, IP addresses with a port, https:// (DoH), tls:// (DoT), and other supported DNS addresses. Separate multiple servers with commas or newlines.";
+"「%@」不是有效的 DNS 服务器地址" = "“%@” is not a valid DNS server address";
+"「%@」已有 DNS 映射，请编辑现有映射" = "“%@” already has a DNS mapping. Edit the existing mapping.";
