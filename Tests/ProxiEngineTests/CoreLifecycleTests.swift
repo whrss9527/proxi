@@ -11,8 +11,8 @@ final class CoreLifecycleTests: XCTestCase {
         let config: URL
         var ready: URL { URL(fileURLWithPath: config.path + ".ready") }
         var terminated: URL { URL(fileURLWithPath: config.path + ".term") }
-        func configure(port: Int = 0, exit: Bool = false) throws {
-            try JSONSerialization.data(withJSONObject: ["port": port, "exit": exit]).write(to: config, options: .atomic)
+        func configure(port: Int = 0, exit: Bool = false, logs: Bool = false) throws {
+            try JSONSerialization.data(withJSONObject: ["port": port, "exit": exit, "logs": logs]).write(to: config, options: .atomic)
         }
     }
 
@@ -43,7 +43,9 @@ final class CoreLifecycleTests: XCTestCase {
         if options['exit']:
             sys.exit(7)
         while True:
-            time.sleep(1)
+            if options['logs']:
+                print('fixture output ' * 512, flush=True)
+            time.sleep(0.001 if options['logs'] else 1)
         """
         try script.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
@@ -129,6 +131,27 @@ final class CoreLifecycleTests: XCTestCase {
         }
         try await runner.stop()
         XCTAssertFalse(runner.isRunning)
+        XCTAssertNil(runner.pid)
+    }
+
+    @MainActor
+    func testStoppingDuringContinuousOutputClosesPipeAndAllowsRestart() async throws {
+        let fixture = try fixture()
+        try fixture.configure(logs: true)
+        let runner = CoreRunner(grace: 0.1, killGrace: 1)
+        defer { cleanup(fixture, runner: runner) }
+        try await runner.start(executable: fixture.executable, directory: fixture.directory, config: fixture.config)
+        _ = try await ready(fixture, pid: runner.pid)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !runner.logTail.contains("fixture output"), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(runner.logTail.contains("fixture output"))
+        try await runner.stop()
+        try fixture.configure()
+        try await runner.start(executable: fixture.executable, directory: fixture.directory, config: fixture.config)
+        _ = try await ready(fixture, pid: runner.pid)
+        try await runner.stop()
         XCTAssertNil(runner.pid)
     }
 

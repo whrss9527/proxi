@@ -116,8 +116,12 @@ final class CoreRunner: @unchecked Sendable {
         process.standardInput = FileHandle.nullDevice
         queue.sync { openLog(in: directory, id: id) }
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            if !data.isEmpty { self?.append(data, id: id) }
+            // 停止时另一条队列会关闭管道；用可抛错的读取处理该竞争，避免 availableData 的异常。
+            guard let data = try? handle.read(upToCount: 64 * 1024), !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            self?.append(data, id: id)
         }
         process.terminationHandler = { [weak self] finished in
             let status = finished.terminationStatus
