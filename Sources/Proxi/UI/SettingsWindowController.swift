@@ -418,6 +418,11 @@ struct GeneralPage: View {
                                 Text(mode.title).tag(mode)
                             }
                         }
+                        if state.config.offMode == .restore {
+                            Text(L("恢复系统网络设置需要相应权限。首次使用或授权过期时，macOS 可能要求输入管理员密码。"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         Toggle(L("定期检查代理服务器能否连上"), isOn: $state.config.healthCheck)
                         TextField(L("测速地址"), text: $state.config.testURL)
                             .textFieldStyle(.roundedBorder)

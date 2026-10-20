@@ -647,3 +647,4 @@
 "网络监控：查看各应用的上传与下载" = "Network Monitor: see upload and download activity by app";
 "进程数" = "Processes";
 "部分系统进程可能受权限限制；关闭或最小化窗口后停止采样。" = "System permissions may hide some processes. Sampling stops when this window is closed or minimized.";
+"恢复系统网络设置需要相应权限。首次使用或授权过期时，macOS 可能要求输入管理员密码。" = "Restoring system network settings requires permission. macOS may ask for an administrator password the first time or when authorization expires.";

@@ -121,30 +121,88 @@ enum SystemServiceProxy {
         return statuses
     }
 
-    /// 恢复完整协议字典，避免 networksetup 丢掉关着的地址和未知字段。阻塞的授权和提交在独立队列上。
+    private static let restorationSession = RestorationSession(write: {
+        writeConfigurations($0, authorization: $1, forcing: $2)
+    })
+
+    /// 恢复完整协议字典，避免 networksetup 丢掉关着的地址和未知字段。
     static func restore(_ settings: [SystemServiceSettings]) async -> SystemServiceResult {
         guard !settings.isEmpty else { return SystemServiceResult() }
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                var authorization: AuthorizationRef?
-                defer { if let authorization { AuthorizationFree(authorization, []) } }
-                let first = writeConfigurations(settings, authorization: nil)
-                guard first.needsAuthorization else { continuation.resume(returning: first.result); return }
-                let status = AuthorizationCreate(nil, nil, [], &authorization)
-                guard status == errAuthorizationSuccess, let authorization else {
-                    continuation.resume(returning: authorizationFailure(settings, status: status)); return
-                }
-                let granted = "system.preferences.network".withCString { name in
-                    var item = AuthorizationItem(name: name, valueLength: 0, value: nil, flags: 0)
-                    return withUnsafeMutablePointer(to: &item) { pointer in
-                        var rights = AuthorizationRights(count: 1, items: pointer)
-                        return AuthorizationCopyRights(authorization, &rights, nil, [.interactionAllowed, .extendRights, .preAuthorize], nil)
+        return await restorationSession.restore(settings)
+    }
+
+    /// authorization 只在私有串行队列读写，队列任务持有 self，释放时不会仍有在途访问。
+    /// 这里的 Sendable 承诺仅用于队列封装，不把 AuthorizationRef 传给异步调用方。
+    final class RestorationSession: @unchecked Sendable {
+        typealias Write = @Sendable ([SystemServiceSettings], AuthorizationRef?, Set<String>) -> (result: SystemServiceResult, needsAuthorization: Bool)
+        private let queue = DispatchQueue(label: "com.whrss9527.proxyswitch.restore", qos: .userInitiated)
+        private var authorization: AuthorizationRef?
+        // 提交成功但应用失败时，下一次不能仅凭磁盘字典一致就宣告完成。
+        private var retryIDs = Set<String>()
+        private let write: Write
+        private let grant: @Sendable (AuthorizationRef) -> OSStatus
+
+        init(write: @escaping Write, grant: @escaping @Sendable (AuthorizationRef) -> OSStatus = { RestorationSession.requestRights($0) }) {
+            self.write = write
+            self.grant = grant
+        }
+
+        deinit {
+            if let authorization { AuthorizationFree(authorization, []) }
+        }
+
+        func restore(_ settings: [SystemServiceSettings]) async -> SystemServiceResult {
+            guard !settings.isEmpty else { return SystemServiceResult() }
+            return await withCheckedContinuation { continuation in
+                queue.async {
+                    let first = self.attempt(settings, authorization: self.authorization)
+                    guard first.needsAuthorization else { continuation.resume(returning: first.result); return }
+                    let remaining = settings.filter { !first.result.succeeded.contains($0.id) }
+                    func finish(_ retry: SystemServiceResult) {
+                        var result = retry
+                        result.succeeded = first.result.succeeded + retry.succeeded
+                        continuation.resume(returning: result)
                     }
+                    if self.authorization == nil {
+                        let status = AuthorizationCreate(nil, nil, [], &self.authorization)
+                        guard status == errAuthorizationSuccess else {
+                            finish(authorizationFailure(remaining, status: status)); return
+                        }
+                    }
+                    guard let authorization = self.authorization else {
+                        finish(authorizationFailure(remaining, status: errAuthorizationInvalidRef)); return
+                    }
+                    let granted = self.grant(authorization)
+                    guard granted == errAuthorizationSuccess else {
+                        AuthorizationFree(authorization, [])
+                        self.authorization = nil
+                        finish(authorizationFailure(remaining, status: granted)); return
+                    }
+                    let retry = self.attempt(remaining, authorization: authorization)
+                    if retry.needsAuthorization {
+                        AuthorizationFree(authorization, [])
+                        self.authorization = nil
+                    }
+                    finish(retry.result)
                 }
-                guard granted == errAuthorizationSuccess else {
-                    continuation.resume(returning: authorizationFailure(settings, status: granted)); return
+            }
+        }
+
+        private func attempt(_ settings: [SystemServiceSettings], authorization: AuthorizationRef?) -> (result: SystemServiceResult, needsAuthorization: Bool) {
+            let attempt = write(settings, authorization, retryIDs)
+            retryIDs.subtract(settings.map(\.id))
+            let succeeded = Set(attempt.result.succeeded)
+            retryIDs.formUnion(settings.filter { !succeeded.contains($0.id) }.map(\.id))
+            return attempt
+        }
+
+        private static func requestRights(_ authorization: AuthorizationRef) -> OSStatus {
+            "system.preferences.network".withCString { name in
+                var item = AuthorizationItem(name: name, valueLength: 0, value: nil, flags: 0)
+                return withUnsafeMutablePointer(to: &item) { pointer in
+                    var rights = AuthorizationRights(count: 1, items: pointer)
+                    return AuthorizationCopyRights(authorization, &rights, nil, [.interactionAllowed, .extendRights, .preAuthorize], nil)
                 }
-                continuation.resume(returning: writeConfigurations(settings, authorization: authorization).result)
             }
         }
     }
@@ -153,19 +211,36 @@ enum SystemServiceProxy {
         SystemServiceResult(failures: Dictionary(uniqueKeysWithValues: settings.map { ($0.name, L("修改系统代理需要管理员权限：%@", String(status))) }))
     }
 
-    private static func writeConfigurations(_ settings: [SystemServiceSettings], authorization: AuthorizationRef?) -> (result: SystemServiceResult, needsAuthorization: Bool) {
+    static func writeConfigurations(_ settings: [SystemServiceSettings], authorization: AuthorizationRef?, forcing retryIDs: Set<String> = []) -> (result: SystemServiceResult, needsAuthorization: Bool) {
         let preferences: SCPreferences?
         if let authorization { preferences = SCPreferencesCreateWithAuthorization(nil, "Proxi" as CFString, nil, authorization) }
         else { preferences = SCPreferencesCreate(nil, "Proxi" as CFString, nil) }
         guard let preferences else { return (authorizationFailure(settings, status: OSStatus(SCError())), false) }
         var result = SystemServiceResult()
         var needsAuthorization = false
+        // 先只读比较，已经恢复或已经删除的服务不需要获取写锁和授权。
+        let pending = settings.filter { item in
+            guard let service = SCNetworkServiceCopy(preferences, item.id as CFString) else {
+                result.succeeded.append(item.id); return false
+            }
+            guard let proxies = SCNetworkServiceCopyProtocol(service, kSCNetworkProtocolTypeProxies) else {
+                result.failures[item.name] = L("无法读取"); return false
+            }
+            if !retryIDs.contains(item.id), item.matches(configuration: SCNetworkProtocolGetConfiguration(proxies) as? [String: Any],
+                            protocolEnabled: SCNetworkProtocolGetEnabled(proxies)) {
+                result.succeeded.append(item.id); return false
+            }
+            return true
+        }
+        guard !pending.isEmpty else { return (result, false) }
         guard SCPreferencesLock(preferences, true) else {
-            return (authorizationFailure(settings, status: OSStatus(SCError())), SCError() == kSCStatusAccessError)
+            let status = SCError()
+            result.failures.merge(authorizationFailure(pending, status: OSStatus(status)).failures) { _, new in new }
+            return (result, status == kSCStatusAccessError)
         }
         defer { SCPreferencesUnlock(preferences) }
         var modified: [SystemServiceSettings] = []
-        for item in settings {
+        for item in pending {
             // 服务已删除时无设置可恢复；不要把同名的新服务误当成原服务。
             guard let service = SCNetworkServiceCopy(preferences, item.id as CFString) else { result.succeeded.append(item.id); continue }
             guard let proxies = SCNetworkServiceCopyProtocol(service, kSCNetworkProtocolTypeProxies) else {
