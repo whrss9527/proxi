@@ -168,7 +168,7 @@ final class CloudConflictTests: XCTestCase {
         let captured = folder.appendingPathComponent("captured.json")
         let candidate = try CloudFile.encoder.encode(synced(2, "conflict"))
         try candidate.write(to: captured)
-        for raw in [#"{"format":3,"config":"future"}"#, #"{"format":2,"config":{"format":3}}"#, #"{"format":2,"config":"broken"}"#, "invalid"] {
+        for raw in [#"{"format":3,"config":"future"}"#, #"{"format":2,"config":{"format":3}}"#, #"{"format":2,"config":"broken"}"#, #"{"format":2,"config":{"profiles":"broken"}}"#, "invalid"] {
             let bytes = Data(raw.utf8)
             try bytes.write(to: current)
             let events = OSAllocatedUnfairLock(initialState: [String]())
@@ -188,7 +188,7 @@ final class CloudConflictTests: XCTestCase {
         let bytes = try CloudFile.encoder.encode(synced(1, "current"))
         try bytes.write(to: current)
         try CloudFile.encoder.encode(synced(2, "good")).write(to: good)
-        for raw in [#"{"format":3,"config":{}}"#, #"{"format":2,"config":{"format":3}}"#, "broken"] {
+        for raw in [#"{"format":3,"config":{}}"#, #"{"format":2,"config":{"format":3}}"#, #"{"format":2,"config":{"profiles":"broken"}}"#, "broken"] {
             try Data(raw.utf8).write(to: bad)
             let events = OSAllocatedUnfairLock(initialState: [String]())
             XCTAssertThrowsError(try CloudFile.resolveConflicts(at: current, conflicts: [conflict(good, events: events), conflict(bad, events: events)]))
