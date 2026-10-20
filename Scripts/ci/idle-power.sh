@@ -9,9 +9,15 @@ exec > >(tee "$RUNNER_TEMP/idle-power.log") 2>&1
 baseline_dir=$(mktemp -d "$RUNNER_TEMP/power-base.XXXXXX")
 app_pid=''
 cleanup() {
-  if [[ -n "$app_pid" ]]; then kill "$app_pid" 2>/dev/null || true; wait "$app_pid" || true; fi
+  if [[ -n "$app_pid" ]]; then
+    kill "$app_pid" 2>/dev/null || true
+    # 失败后的清理也有截止时间，保留原检查失败，不让 wait 掩盖退出死锁。
+    if ! wait_for 5 "测量进程收尾" process_gone "$app_pid"; then kill -KILL "$app_pid" 2>/dev/null || true; fi
+    wait "$app_pid" || true
+  fi
   rm -rf "$baseline_dir"
 }
+process_gone() { ! kill -0 "$1" 2>/dev/null; }
 trap cleanup EXIT
 git fetch --no-tags origin "$CI_BASE_SHA"
 git archive "$CI_BASE_SHA" | tar -x -C "$baseline_dir"

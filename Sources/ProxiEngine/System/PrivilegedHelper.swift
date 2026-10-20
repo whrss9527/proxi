@@ -858,7 +858,9 @@ enum HelperClient {
 /// 经助手运行的内核：和本机进程的 CoreRunner 用法一样。启动、停止、同步会阻塞，要放在后台线程调用。
 final class HelperCoreRunner: @unchecked Sendable {
     private let lock = NSLock()
+    private let operations = DispatchQueue(label: "com.whrss9527.proxyswitch.helper.lifecycle", qos: .userInitiated)
     private var lease: Lease?
+    private var generation: UInt64 = 0
 
     private final class Lease {
         let fd: Int32
@@ -867,7 +869,19 @@ final class HelperCoreRunner: @unchecked Sendable {
     }
 
     /// 内核自己退出了，或者和助手断开了（主线程）。
-    var onExit: (@MainActor (Int32) -> Void)?
+    @MainActor var onExit: (@MainActor (Int32) -> Void)?
+
+    func startAsync(source: String, files: [String]) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            operations.async { continuation.resume(with: Result { try self.start(source: source, files: files) }) }
+        }
+    }
+
+    func stopAsync() async {
+        await withCheckedContinuation { continuation in
+            operations.async { self.stop(); continuation.resume() }
+        }
+    }
 
     var isRunning: Bool {
         lock.lock()
@@ -877,7 +891,7 @@ final class HelperCoreRunner: @unchecked Sendable {
 
     /// 请助手复制文件并启动内核；回应之后这个连接一直开着，断开就等于让助手停掉内核。
     /// 返回助手给这个内核换上的控制接口密钥。
-    func start(source: String, files: [String]) throws -> String {
+    private func start(source: String, files: [String]) throws -> String {
         stop()
         let fd = try HelperClient.openConnection(timeout: 60)
         let secret: String
@@ -893,6 +907,7 @@ final class HelperCoreRunner: @unchecked Sendable {
         let lease = Lease(fd: fd)
         lock.lock()
         self.lease = lease
+        generation &+= 1
         lock.unlock()
         Thread.detachNewThread { [weak self] in
             self?.watch(lease)
@@ -912,19 +927,30 @@ final class HelperCoreRunner: @unchecked Sendable {
         lock.lock()
         let current = self.lease === lease
         if current { self.lease = nil }
+        let generation = self.generation
         lease.finished = true
         lock.unlock()
         close(lease.fd)
         if current {
-            Task { @MainActor [weak self] in self?.onExit?(status) }
+            Task { @MainActor [weak self] in
+                guard let self, self.isLatest(generation) else { return }
+                self.onExit?(status)
+            }
         }
     }
 
+    private func isLatest(_ generation: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return self.generation == generation
+    }
+
     /// 停掉内核：请助手停（它等内核真的退出才回应，端口这时已经空出来了），再结束租约。
-    func stop() {
+    private func stop() {
         lock.lock()
         let lease = self.lease
         self.lease = nil
+        generation &+= 1
         lock.unlock()
         guard let lease else { return }
         _ = try? HelperClient.request("stop", timeout: 15)
