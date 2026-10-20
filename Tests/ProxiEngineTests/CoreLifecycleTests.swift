@@ -174,7 +174,8 @@ final class CoreLifecycleTests: XCTestCase {
         let removal = Task { @MainActor in
             await engine.stopCore {
                 XCTAssertNil(CoreProcessIdentity.read(child.pid))
-                XCTAssertNoThrow(try FileManager.default.removeItem(at: fixture.executable))
+                do { try FileManager.default.removeItem(at: fixture.executable) }
+                catch { XCTFail("removal failed: \(error)") }
             }
         }
         // TERM 标记保证停止已开始，此时排入另一次配置更新。
