@@ -165,27 +165,57 @@ enum CloudFile {
         }
     }
 
-    /// 两台机器同时改过时 iCloud 会留下冲突版本：所有版本里 updatedAt 最新的胜出，写回去并清掉其他版本。
+    /// 仅保留本次捕获的版本操作，避免完成后把新出现的冲突也一起清掉。
+    struct Conflict {
+        let url: URL
+        let resolve: () -> Void
+        let remove: () throws -> Void
+    }
+
+    /// 两台机器同时改过时 iCloud 会留下冲突版本：所有版本里 updatedAt 最新的胜出。
     /// 返回胜出的内容；没有冲突返回 nil。
     static func resolveConflicts(at url: URL) throws -> SyncedConfig? {
-        let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        let conflicts = versions.map { version in
+            Conflict(url: version.url, resolve: { version.isResolved = true }, remove: { try version.remove() })
+        }
+        return try resolveConflicts(at: url, conflicts: conflicts)
+    }
+
+    /// 测试可提供捕获的版本和失败的原子写入；文件协调始终使用真正的 NSFileCoordinator。
+    static func resolveConflicts(at url: URL, conflicts: [Conflict],
+                                 writeData: (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) throws -> SyncedConfig? {
         guard !conflicts.isEmpty else { return nil }
-        var candidates: [SyncedConfig] = []
-        if let current = try read(at: url) {
-            candidates.append(current)
-        }
-        for version in conflicts {
-            let data = try Data(contentsOf: version.url)
+        func decode(_ url: URL) throws -> SyncedConfig {
+            let data = try Data(contentsOf: url)
             try requireSupportedFormat(data)
-            candidates.append(try decoder.decode(SyncedConfig.self, from: data))
+            return try decoder.decode(SyncedConfig.self, from: data)
         }
-        let winner = newest(candidates)
-        if let winner { try write(winner, to: url) }
-        for version in conflicts {
-            version.isResolved = true
+        let captured = try conflicts.map { try decode($0.url) }
+        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+        var coordinationError: NSError?
+        var result: Result<SyncedConfig?, Error> = .failure(CocoaError(.fileWriteUnknown))
+        // 更新而非替换意图：先让呈现者保存待提交的修改，再在同一协调内重读、比较并写回。
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forMerging, error: &coordinationError) { writeURL in
+            result = Result {
+                var candidates = captured
+                if FileManager.default.fileExists(atPath: writeURL.path) {
+                    candidates.insert(try decode(writeURL), at: 0)
+                }
+                guard let winner = newest(candidates) else { return nil }
+                try writeData(encoder.encode(winner), writeURL)
+                // 版本存储的移除同样要求写协调；只处理写入成功时已捕获的集合。
+                for version in conflicts {
+                    version.resolve()
+                    // 移除失败仍保留该版本，不影响已成功写入的当前文档。
+                    try? version.remove()
+                }
+                return winner
+            }
         }
-        try? NSFileVersion.removeOtherVersionsOfItem(at: url)
-        Log.info("iCloud 同步：解决了 \(conflicts.count) 个冲突版本，采用来自 \(winner?.device ?? "?") 的改动")
+        if let coordinationError { throw coordinationError }
+        guard let winner = try result.get() else { return nil }
+        Log.info("iCloud 同步：解决了 \(conflicts.count) 个冲突版本，采用来自 \(winner.device) 的改动")
         return winner
     }
 
