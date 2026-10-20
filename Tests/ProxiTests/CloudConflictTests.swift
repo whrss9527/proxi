@@ -128,6 +128,36 @@ final class CloudConflictTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: captured.path))
     }
 
+    func testLocalFileVersionAddedAfterCaptureSurvivesCleanup() throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let current = folder.appendingPathComponent("config.json")
+        let contents = folder.appendingPathComponent("version.json")
+        try CloudFile.encoder.encode(synced(1, "current")).write(to: current)
+        defer {
+            for version in NSFileVersion.otherVersionsOfItem(at: current) ?? [] { try? version.remove() }
+        }
+        func addVersion(_ snapshot: SyncedConfig) throws -> NSFileVersion {
+            try CloudFile.encoder.encode(snapshot).write(to: contents)
+            var error: NSError?
+            var result: Result<NSFileVersion, Error> = .failure(CocoaError(.fileWriteUnknown))
+            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: current, options: .forMerging, error: &error) { writeURL in
+                result = Result { try NSFileVersion.addOfItem(at: writeURL, withContentsOf: contents, options: []) }
+            }
+            if let error { throw error }
+            return try result.get()
+        }
+        let captured = try addVersion(synced(2, "captured"))
+        let resolved = OSAllocatedUnfairLock(initialState: false)
+        // 本地历史版本不冒充 iCloud 冲突；移除是真实的 NSFileVersion 操作。
+        let version = CloudFile.Conflict(url: captured.url, resolve: { resolved.withLock { $0 = true } }, remove: { try captured.remove() })
+        let lateSnapshot = synced(3, "later")
+        let later = try addVersion(lateSnapshot)
+        XCTAssertEqual(try CloudFile.resolveConflicts(at: current, conflicts: [version])?.device, "captured")
+        XCTAssertTrue(resolved.withLock { $0 })
+        XCTAssertEqual(try CloudFile.decoder.decode(SyncedConfig.self, from: Data(contentsOf: later.url)), lateSnapshot)
+    }
+
     func testFutureOrCorruptCurrentBytesAndVersionsRemainUntouched() throws {
         let folder = try folder()
         defer { try? FileManager.default.removeItem(at: folder) }
