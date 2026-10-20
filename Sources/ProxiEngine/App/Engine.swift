@@ -125,7 +125,7 @@ final class Engine: ObservableObject {
     /// 流量统计变了（隔一会儿存一次），交给 AppState 写到本机状态里。
     var persistTraffic: ((TrafficStats) -> Void)?
 
-    private let runner = CoreRunner()
+    private let runner: CoreRunner
     /// 开虚拟网卡时内核要以 root 运行，经特权助手启动。
     private let helperRunner = HelperCoreRunner()
     /// 现在这个内核是经特权助手运行的。
@@ -179,6 +179,9 @@ final class Engine: ObservableObject {
     private var nextLogID = 0
     var bufferedLiveLogCount: Int { pendingLog.count }
     private var logFlushScheduled = false
+    init(runner: CoreRunner = CoreRunner()) {
+        self.runner = runner
+    }
     /// 「最近的网速」保留的点数（每两秒一个，共两分钟）。
     static let speedHistoryLimit = 60
     static let liveLogLimit = 500
@@ -471,9 +474,14 @@ final class Engine: ObservableObject {
     }
 
     @discardableResult
-    func stopCore() async -> Bool {
+    func stopCore(afterStopping: @escaping @MainActor () -> Void = {}) async -> Bool {
         await enqueueLifecycle {
-            do { try await self.performStopCore(); return true }
+            do {
+                try await self.performStopCore()
+                // 删除或重新下载与停止属于同一操作，后续 reconcile 不能从中间插入。
+                afterStopping()
+                return true
+            }
             catch { self.reportStopFailure(error); return false }
         }
     }

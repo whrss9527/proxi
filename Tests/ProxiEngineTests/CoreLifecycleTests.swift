@@ -156,6 +156,41 @@ final class CoreLifecycleTests: XCTestCase {
     }
 
     @MainActor
+    func testRemovalFinishesBeforeQueuedReconcileCanCheckExecutable() async throws {
+        let fixture = try fixture()
+        let runner = CoreRunner(grace: 0.2, killGrace: 1)
+        defer { cleanup(fixture, runner: runner) }
+        try await runner.start(executable: fixture.executable, directory: fixture.directory, config: fixture.config)
+        let child = try await ready(fixture, pid: runner.pid)
+        let engine = Engine(runner: runner)
+        var config = AppConfig()
+        config.engine.subscriptions = [Subscription(name: "fixture", url: "https://example.com/config")]
+        engine.readConfig = { config }
+        var observedExecutable: [Bool] = []
+        engine.coreReady = {
+            observedExecutable.append(FileManager.default.fileExists(atPath: fixture.executable.path))
+            return false
+        }
+        let removal = Task { @MainActor in
+            await engine.stopCore {
+                XCTAssertNil(CoreProcessIdentity.read(child.pid))
+                XCTAssertNoThrow(try FileManager.default.removeItem(at: fixture.executable))
+            }
+        }
+        // TERM 标记保证停止已开始，此时排入另一次配置更新。
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !FileManager.default.fileExists(atPath: fixture.terminated.path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.terminated.path))
+        await engine.reconcile()
+        let removed = await removal.value
+        XCTAssertTrue(removed)
+        XCTAssertEqual(observedExecutable, [false])
+        XCTAssertNil(runner.pid)
+    }
+
+    @MainActor
     func testChangedProcessIdentityRefusesSignalsAndReplacement() async throws {
         let fixture = try fixture()
         let changed = OSAllocatedUnfairLock(initialState: false)
