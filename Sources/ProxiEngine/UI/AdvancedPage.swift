@@ -127,10 +127,8 @@ struct DNSSection: View {
     @State private var fallbackViaProxy = true
     @State private var bootstrap = ""
     @State private var policies: [DNSPolicy] = []
-    @State private var newDomain = ""
-    @State private var newServers = ""
+    @State private var editingPolicy: DNSPolicy?
     @State private var problem: String?
-    @State private var loaded = false
 
     var body: some View {
         Section("DNS") {
@@ -143,47 +141,46 @@ struct DNSSection: View {
                 field(L("备用 DNS"), text: $fallback, prompt: L("https://1.1.1.1/dns-query（留空不用）"))
                 Toggle(L("备用 DNS 经「节点」查询"), isOn: $fallbackViaProxy)
                 field(L("解析 DNS 服务器用的 IP"), text: $bootstrap, prompt: "223.5.5.5, 119.29.29.29")
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(L("按域名指定 DNS"))
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(L("域名 DNS 映射"))
                         .font(.system(size: 12, weight: .medium))
-                    ForEach(policies) { policy in
-                        HStack {
-                            Text(policy.domain)
-                                .font(.system(size: 11, design: .monospaced))
-                            Text("→ " + policy.servers.joined(separator: ", "))
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button {
-                                policies.removeAll { $0.id == policy.id }
-                            } label: {
-                                Image(systemName: "minus.circle")
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
-                        }
+                    Spacer()
+                    Button(L("添加映射…")) {
+                        editingPolicy = DNSPolicy(domain: "", servers: [])
                     }
-                    HStack {
-                        TextField("", text: $newDomain, prompt: Text("+.corp.example.com"))
-                            .frame(width: 180)
-                        TextField("", text: $newServers, prompt: Text("10.0.0.53"))
-                        Button(L("加")) {
-                            let policy = DNSPolicy(domain: newDomain, servers: DNSSettings.parseList(newServers))
-                            if let issue = policy.validate() {
-                                problem = issue
-                            } else {
-                                policies.append(policy)
-                                newDomain = ""
-                                newServers = ""
-                                problem = nil
-                            }
-                        }
-                        .disabled(newDomain.isEmpty || newServers.isEmpty)
-                    }
-                    Text(L("公司内网、家里的 NAS 这类域名交给指定的 DNS；+.example.com 连同子域名。"))
+                }
+                if policies.isEmpty {
+                    Text(L("例如 example.com → 223.5.5.5；没有映射的域名继续使用上面的 DNS 设置。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                ForEach(policies) { policy in
+                    HStack {
+                        Text(policy.domain)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text("→ " + policy.servers.joined(separator: ", "))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        Spacer()
+                        Button(L("编辑")) { editingPolicy = policy }
+                        Button {
+                            policies.removeAll { $0.id == policy.id }
+                            problem = nil
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.plain)
+                        .help(L("删除映射"))
+                        .accessibilityLabel(L("删除映射"))
+                    }
+                }
+                Text(L("启用上方 DNS 并点击「应用」后生效。映射仅用于代理引擎在本机执行的域名解析；由远端节点或浏览器自行解析的域名不受此设置控制。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             HStack {
                 if let problem {
@@ -208,6 +205,12 @@ struct DNSSection: View {
         }
         .onAppear { load(current) }
         .onChange(of: current) { _, value in load(value) }
+        .sheet(item: $editingPolicy) { policy in
+            DNSPolicySheet(policy: policy, policies: policies) { updated in
+                policies = updated.replacing(in: policies)
+                problem = nil
+            }
+        }
     }
 
     private func field(_ title: String, text: Binding<String>, prompt: String) -> some View {
@@ -237,6 +240,64 @@ struct DNSSection: View {
         fallbackViaProxy = dns.fallbackViaProxy
         bootstrap = dns.bootstrap.joined(separator: ", ")
         policies = dns.policies
+    }
+}
+
+/// 只编辑表单草稿，父表单点击「应用」后统一写配置、重载内核。
+struct DNSPolicySheet: View {
+    var policy: DNSPolicy
+    var policies: [DNSPolicy]
+    var save: (DNSPolicy) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var domain: String
+    @State private var servers: String
+
+    init(policy: DNSPolicy, policies: [DNSPolicy], save: @escaping (DNSPolicy) -> Void) {
+        self.policy = policy
+        self.policies = policies
+        self.save = save
+        _domain = State(initialValue: policy.domain)
+        _servers = State(initialValue: policy.servers.joined(separator: ", "))
+    }
+
+    private var draft: DNSPolicy {
+        var value = DNSPolicy(domain: domain, servers: DNSSettings.parseList(servers))
+        value.id = policy.id
+        return value
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L("域名 DNS 映射"))
+                .font(.system(size: 16, weight: .semibold))
+            TextField(L("域名"), text: $domain, prompt: Text("example.com"))
+            Text(L("example.com 只匹配该域名；+.example.com 包含该域名和所有子域名；*.example.com 只匹配一级子域名。不要填写 https:// 或网页路径。"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(L("DNS 服务器"), text: $servers, prompt: Text("223.5.5.5"))
+            Text(L("支持 IP、带端口的 IP、https://（DoH）、tls://（DoT）等 DNS 地址；多个服务器用逗号或换行分隔。"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let problem = draft.validate(among: policies), !domain.isEmpty || !servers.isEmpty {
+                Text(problem)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            HStack {
+                Spacer()
+                Button(L("取消")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(L("完成")) {
+                    guard draft.validate(among: policies) == nil else { return }
+                    save(draft)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(draft.validate(among: policies) != nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 500)
     }
 }
 

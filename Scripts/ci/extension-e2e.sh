@@ -53,6 +53,7 @@ grep -q '"engine"' "$support/config.json" && { echo "代理引擎那条配置不
 echo "经代理引擎访问外网：$(curl -s -m 10 -x http://127.0.0.1:7890 -o /dev/null -w '%{http_code}' https://www.apple.com/library/test/success.html || true)"
 # 代理引擎自己的命令行：经它的本机控制接口操作。
 core="$engine/core/config.yaml"
+python3 Scripts/ci/check-dns-mapping.py "$bin" "$core"
 "$bin" status --json | tee "$RUNNER_TEMP/engine-status.json"
 grep -q '"engine"' "$RUNNER_TEMP/engine-status.json" || { echo "代理引擎的命令行读不到状态"; exit 1; }
 "$bin" nodes 测试

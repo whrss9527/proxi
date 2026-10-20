@@ -47,8 +47,12 @@ struct DNSSettings: Codable, Equatable {
             let host = DNSSettings.plainHost(server)
             if !IPPrefix.isIPv4Address(host) && !IPPrefix.isIPv6Address(host) { return L("「%@」要填 IP 地址", server) }
         }
+        var domains = Set<String>()
         for policy in policies {
             if let problem = policy.validate() { return problem }
+            if !domains.insert(DNSPolicy.normalizedDomain(policy.domain)).inserted {
+                return L("「%@」已有 DNS 映射，请编辑现有映射", policy.domain)
+            }
         }
         return nil
     }
@@ -65,10 +69,20 @@ struct DNSSettings: Codable, Equatable {
                 return L("「%@」的协议不认识：支持 udp、tcp、tls、https、quic、dhcp", server)
             }
             let rest = server[range.upperBound...]
-            return rest.isEmpty ? L("「%@」没有写服务器地址", server) : nil
+            guard !rest.isEmpty, let endpoint = URLComponents(string: server),
+                  let host = endpoint.host, !host.isEmpty,
+                  endpoint.port.map({ (1...65535).contains($0) }) ?? true else {
+                return L("「%@」不是有效的 DNS 服务器地址", server)
+            }
+            return nil
         }
         let host = plainHost(server)
-        if IPPrefix.isIPv4Address(host) || IPPrefix.isIPv6Address(host) { return nil }
+        if IPPrefix.isIPv4Address(host) || IPPrefix.isIPv6Address(host) {
+            if server == host || server == "[\(host)]" { return nil }
+            let prefix = server.hasPrefix("[") ? "[\(host)]:" : "\(host):"
+            if server.hasPrefix(prefix), let port = Int(server.dropFirst(prefix.count)), (1...65535).contains(port) { return nil }
+            return L("「%@」不是有效的 DNS 服务器地址", server)
+        }
         return L("「%@」不是 IP：域名形式的服务器要写成 https://… 或 tls://…", server)
     }
 
@@ -105,8 +119,8 @@ struct DNSPolicy: Codable, Equatable, Identifiable, Hashable {
     var servers: [String] = []
 
     init(domain: String, servers: [String]) {
-        self.domain = domain.trimmingCharacters(in: .whitespaces).lowercased()
-        self.servers = servers
+        self.domain = Self.normalizedDomain(domain)
+        self.servers = servers.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -116,17 +130,40 @@ struct DNSPolicy: Codable, Equatable, Identifiable, Hashable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        domain = try container.decodeIfPresent(String.self, forKey: .domain) ?? ""
+        domain = Self.normalizedDomain(try container.decodeIfPresent(String.self, forKey: .domain) ?? "")
         servers = try container.decodeIfPresent([String].self, forKey: .servers) ?? []
     }
 
-    func validate() -> String? {
-        if !HostEntry.validDomainPattern(domain) { return L("认不出域名「%@」", domain) }
+    static func normalizedDomain(_ value: String) -> String {
+        var domain = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if domain.hasSuffix("."), !domain.hasSuffix("..") { domain.removeLast() }
+        return domain
+    }
+
+    /// 编辑沿用原来的 ID，精确域名和子域名模式可以分别指定服务器。
+    func validate(among policies: [DNSPolicy] = []) -> String? {
+        let domain = Self.normalizedDomain(domain)
+        var host = domain
+        if host.hasPrefix("+.") || host.hasPrefix("*.") { host = String(host.dropFirst(2)) }
+        else if host.hasPrefix(".") { host = String(host.dropFirst()) }
+        if !HostEntry.validDomainPattern(domain) || host.split(separator: ".", omittingEmptySubsequences: false).contains(where: { $0.isEmpty }) {
+            return L("认不出域名「%@」", domain)
+        }
+        if policies.contains(where: { $0.id != id && Self.normalizedDomain($0.domain) == domain }) {
+            return L("「%@」已有 DNS 映射，请编辑现有映射", domain)
+        }
         if servers.isEmpty { return L("「%@」没有填 DNS 服务器", domain) }
         for server in servers {
             if let problem = DNSSettings.validateServer(server) { return problem }
         }
         return nil
+    }
+
+    func replacing(in policies: [DNSPolicy]) -> [DNSPolicy] {
+        var result = policies
+        if let index = result.firstIndex(where: { $0.id == id }) { result[index] = self }
+        else { result.append(self) }
+        return result
     }
 }
 
