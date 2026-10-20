@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import FritCore
 
 /// 更新：检查 GitHub 上的新版本，下载、校验、替换程序并重新启动。状态只在主线程上改，界面直接观察它。
 @MainActor
@@ -117,7 +118,7 @@ final class Updater: ObservableObject {
             let latest = try await UpdateChecker.latest(routes: routes(for: UpdateChecker.apiURL))
             lastChecked = Date()
             let current = UpdateChecker.currentVersion
-            guard UpdateChecker.isNewer(latest.version, than: current) else {
+            guard AppVersion.isNewer(latest.version, than: current) else {
                 Log.info("检查更新：当前 \(current) 已是最新（最新发布 \(latest.version)）")
                 phase = .upToDate
                 return nil

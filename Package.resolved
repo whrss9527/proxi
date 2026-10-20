@@ -1,0 +1,14 @@
+{
+  "pins": [
+    {
+      "identity": "frit",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/whrss9527/Frit",
+      "state": {
+        "revision": "59f87020d98a48c0936a1c4062e4a03e161d4bc6",
+        "version": "0.1.0"
+      }
+    }
+  ],
+  "version": 2
+}

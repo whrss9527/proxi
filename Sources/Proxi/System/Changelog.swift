@@ -1,3 +1,4 @@
+import FritCore
 import Foundation
 
 /// 仓库根目录的 CHANGELOG.md。检查到新版本时，「设置 → 关于」按它列出从当前版本到新版本之间每一版的改动：
@@ -49,7 +50,7 @@ enum Changelog {
 
     /// 比 current 新、不比 latest 新的几版，新的在前。
     static func releases(_ all: [Release], after current: String, upTo latest: String) -> [Release] {
-        all.filter { UpdateChecker.isNewer($0.version, than: current) && !UpdateChecker.isNewer($0.version, than: latest) }
-            .sorted { UpdateChecker.isNewer($0.version, than: $1.version) }
+        all.filter { AppVersion.isNewer($0.version, than: current) && !AppVersion.isNewer($0.version, than: latest) }
+            .sorted { AppVersion.isNewer($0.version, than: $1.version) }
     }
 }
