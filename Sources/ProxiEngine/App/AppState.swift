@@ -681,11 +681,11 @@ final class AppState: ObservableObject {
     }
 
     /// 退出时停掉内核。系统代理、终端、git 和 npm 是 Proxi 设置的，这里不动。
-    func handleExit() {
+    func handleExit() async {
         control.stop()
         sleepGuard.release()
         statusFile.remove()
-        engine.shutdown()
+        await engine.shutdown()
     }
 }
 

@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var signalSources: [DispatchSourceSignal] = []
     private var pageRequestObserver: NSObjectProtocol?
+    private var terminationPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandlers()
@@ -70,8 +71,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationPending else { return .terminateLater }
+        terminationPending = true
+        Task { @MainActor in
+            await AppState.shared.handleExit()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        AppState.shared.handleExit()
         Log.info("代理引擎已退出")
         Log.flush()
     }

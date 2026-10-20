@@ -1400,3 +1400,5 @@
 "支持 IP、带端口的 IP、https://（DoH）、tls://（DoT）等 DNS 地址；多个服务器用逗号或换行分隔。" = "Supports IP addresses, IP addresses with a port, https:// (DoH), tls:// (DoT), and other supported DNS addresses. Separate multiple servers with commas or newlines.";
 "「%@」不是有效的 DNS 服务器地址" = "“%@” is not a valid DNS server address";
 "「%@」已有 DNS 映射，请编辑现有映射" = "“%@” already has a DNS mapping. Edit the existing mapping.";
+"内核进程未在期限内退出，已取消后续启动" = "The core process did not exit in time. The next start was cancelled.";
+"无法确认内核进程身份，未发送停止信号" = "Could not verify the core process identity. No stop signal was sent.";

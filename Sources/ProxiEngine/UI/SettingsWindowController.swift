@@ -439,8 +439,9 @@ struct CorePage: View {
                         .disabled(core.isBusy)
                         Button(L("删除内核"), role: .destructive) {
                             // stopCore 连状态一起清掉：不然还显示在运行，写给 Proxi 的状态也说内核在运行。
-                            engine.stopCore()
-                            core.remove()
+                            Task {
+                                if await engine.stopCore() { core.remove() }
+                            }
                         }
                         .disabled(core.isBusy || !core.isReady)
                     }

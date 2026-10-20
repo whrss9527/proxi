@@ -145,6 +145,7 @@ final class Engine: ObservableObject {
     private var reconcileTask: Task<Void, Never>?
     /// 正在执行的 reconcile；后来的排在它后面，同一时间只有一个在动内核。
     private var reconcileChain: Task<Void, Never>?
+    private var shuttingDown = false
     private var connectionsTask: Task<Void, Never>?
     private var accumulator = TrafficAccumulator()
     private var trafficDirty = false
@@ -258,23 +259,27 @@ final class Engine: ObservableObject {
         scheduleReconcile()
     }
 
-    /// 退出时停掉内核（经助手运行的也停掉，助手会恢复 IP 转发）。
-    func shutdown() {
+    /// 退出不再阻塞主线程；先禁止新启动，再等已排队的操作收尾。
+    func shutdown() async {
+        shuttingDown = true
+        reconcileTask?.cancel()
+        refreshTimer?.invalidate()
+        ruleUpdateTimer?.invalidate()
+        backfillTask?.cancel()
         stopPolling()
         saveTraffic(force: true)
-        if runningViaHelper {
-            helperRunner.stop()
-        } else {
-            runner.stop()
+        await enqueueLifecycle {
+            do { try await self.stopProcess() }
+            catch { Log.error("退出时停止内核失败：\(error.localizedDescription)") }
+            self.api = nil
+            self.shareStatus = .off
+            self.tunStatus = .off
         }
-        runningViaHelper = false
-        api = nil
-        shareStatus = .off
-        tunStatus = .off
     }
 
     /// 配置变了：该跑就跑（配置内容变了就重新加载），不该跑就停。多次调用合并成一次。
     func scheduleReconcile() {
+        guard !shuttingDown else { return }
         reconcileTask?.cancel()
         reconcileTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
@@ -284,16 +289,21 @@ final class Engine: ObservableObject {
     }
 
     /// 同一时间只让一个 reconcile 动内核：启动内核要等它响应，期间再来的（比如本机代理状态变了）排在后面执行。
-    func reconcile() async {
+    private func enqueueLifecycle<Value: Sendable>(_ operation: @escaping @MainActor () async -> Value) async -> Value {
         let previous = reconcileChain
-        let task = Task { @MainActor [weak self] in
-            if let previous {
-                await previous.value
-            }
-            await self?.performReconcile()
+        let task = Task { @MainActor in
+            if let previous { await previous.value }
+            return await operation()
         }
-        reconcileChain = task
-        await task.value
+        reconcileChain = Task { _ = await task.value }
+        return await task.value
+    }
+
+    func reconcile() async {
+        await enqueueLifecycle { [weak self] in
+            guard let self, !self.shuttingDown else { return }
+            await self.performReconcile()
+        }
     }
 
     private func performReconcile() async {
@@ -301,7 +311,8 @@ final class Engine: ObservableObject {
         let tun = effectiveTun
         guard wantsCore else {
             if api != nil || coreProcessRunning {
-                stopCore()
+                do { try await performStopCore() }
+                catch { reportStopFailure(error) }
             } else if status != .off {
                 status = .off
             }
@@ -312,7 +323,8 @@ final class Engine: ObservableObject {
         // 不然会报一串「还没有下载内核」的错，也可能运行一个没校验过的内核。
         guard coreReady() else {
             if api != nil || coreProcessRunning {
-                stopCore()
+                do { try await performStopCore() }
+                catch { reportStopFailure(error) }
             }
             return
         }
@@ -321,11 +333,11 @@ final class Engine: ObservableObject {
             if coreProcessRunning, let api {
                 if (tun != nil) != runningViaHelper {
                     // 开关虚拟网卡：内核换个方式运行（经助手以 root 运行，或者回到本机进程）。
-                    stopCore()
+                    try await performStopCore()
                     try await startCore(with: text)
                 } else if text != lastConfigText {
                     if portsChanged(from: lastConfigText, to: text) {
-                        stopCore()
+                        try await performStopCore()
                         try await startCore(with: text)
                     } else {
                         try write(text)
@@ -392,13 +404,21 @@ final class Engine: ObservableObject {
     }
 
     func restartCore() async {
-        stopCore()
-        await reconcile()
+        await enqueueLifecycle {
+            guard !self.shuttingDown else { return }
+            do {
+                try await self.performStopCore()
+                await self.performReconcile()
+            } catch { self.reportStopFailure(error) }
+        }
     }
 
     private func startCore(with text: String) async throws {
         status = .starting
-        CoreRunner.killStrays()
+        guard !shuttingDown else { throw CancellationError() }
+        let support = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        let legacy = ["Proxi/core/config.yaml", "ProxySwitch/core/config.yaml"].map { support.appendingPathComponent($0) }
+        try await CoreRunner.killStrays(configs: [configURL] + legacy)
         try prepareDirectory()
         try write(text)
         // 内核控制接口的密钥：自己运行时就是 secret，经助手运行时是助手换上的。
@@ -410,14 +430,12 @@ final class Engine: ObservableObject {
             let source = Self.directory.path
             let files = helperFiles
             // root 的内核用助手换上的密钥（用户目录里那份配置里的密钥对它没用）。
-            apiSecret = try await Task.detached(priority: .userInitiated) {
-                try helper.start(source: source, files: files)
-            }.value
+            apiSecret = try await helper.startAsync(source: source, files: files)
             runningViaHelper = true
             forwardingOn = false
         } else {
             guard let executable = CoreBinary.executableURL else { throw CoreRunnerError.missingBinary }
-            try runner.start(executable: executable, directory: Self.directory, config: configURL)
+            try await runner.start(executable: executable, directory: Self.directory, config: configURL)
             apiSecret = secret
             runningViaHelper = false
         }
@@ -425,7 +443,7 @@ final class Engine: ObservableObject {
         self.api = api
         var version: String?
         for _ in 0..<50 {
-            if !coreProcessRunning { break }
+            if shuttingDown || !coreProcessRunning { break }
             if let found = try? await api.version() {
                 version = found
                 break
@@ -434,7 +452,7 @@ final class Engine: ObservableObject {
         }
         guard let version else {
             let tail = logTail.split(separator: "\n").suffix(3).joined(separator: " ")
-            stopProcess()
+            try await stopProcess()
             self.api = nil
             throw CoreRunnerError.notReady(tail.isEmpty ? L("没有响应") : tail)
         }
@@ -452,9 +470,23 @@ final class Engine: ObservableObject {
         await verifyShare()
     }
 
-    func stopCore() {
+    @discardableResult
+    func stopCore() async -> Bool {
+        await enqueueLifecycle {
+            do { try await self.performStopCore(); return true }
+            catch { self.reportStopFailure(error); return false }
+        }
+    }
+
+    private func reportStopFailure(_ error: Error) {
+        status = .failed(error.localizedDescription)
+        lastError = error.localizedDescription
+        Log.error("停止内核失败：\(error.localizedDescription)")
+    }
+
+    private func performStopCore() async throws {
         stopPolling()
-        stopProcess()
+        try await stopProcess()
         api = nil
         lastConfigText = nil
         status = .off
@@ -478,11 +510,12 @@ final class Engine: ObservableObject {
     }
 
     /// 停掉内核进程（本机的或者助手那边的）。
-    private func stopProcess() {
+    private func stopProcess() async throws {
         if runningViaHelper {
-            helperRunner.stop()
+            let helper = helperRunner
+            await helper.stopAsync()
         } else {
-            runner.stop()
+            try await runner.stop()
         }
         runningViaHelper = false
         forwardingOn = false
@@ -490,7 +523,7 @@ final class Engine: ObservableObject {
 
     private func coreExited(_ code: Int32) {
         // 启动阶段的退出由 startCore 自己处理（配置错误时反复重启没有意义）。
-        guard api != nil, status != .starting else { return }
+        guard !shuttingDown, api != nil, status != .starting else { return }
         api = nil
         lastConfigText = nil
         stopPolling()
