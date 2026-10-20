@@ -152,6 +152,25 @@ wait_for 15 "Proxi 已退出" condition_13
 condition_14() { ! pgrep -x ProxiEngine >/dev/null; }
 wait_for 10 "扩展已退出" condition_14
 pgrep -x ProxiEngine >/dev/null && { echo "Proxi 退出时代理引擎应该跟着退出（下次打开 Proxi 再启动）"; exit 1; }
+# 直接信号退出来自主队列回调；须能完成 terminateLater 的异步清理，不能卡在嵌套循环。
+# 独立配置不开内核；仍使用刚验证过的可执行文件，避免这项回归额外下载。
+for test_signal in TERM INT HUP; do
+  (
+    export PROXI_ENGINE_DIR="$RUNNER_TEMP/termination-$test_signal"
+    export PROXI_CORE="$engine/bin/mihomo"
+    mkdir -p "$PROXI_ENGINE_DIR"
+    printf '{"autoCheckUpdates":false,"engine":{"enabled":false}}\n' > "$PROXI_ENGINE_DIR/config.json"
+    "$bin" > "$RUNNER_TEMP/termination-$test_signal.log" 2>&1 &
+    termination_pid=$!
+    trap 'kill -KILL "$termination_pid" 2>/dev/null || true; wait "$termination_pid" 2>/dev/null || true' EXIT
+    wait_json "$bin" '.proxy.state == "off"' 15
+    kill -s "$test_signal" "$termination_pid"
+    wait_for 10 "SIG$test_signal 正常退出" not_running ProxiEngine
+    wait "$termination_pid"
+    trap - EXIT
+    printf 'SIG%s：正常退出\n' "$test_signal"
+  )
+done
 # 代理引擎跟着退出了：正在用的「代理引擎」配置也要关掉，不然 git、系统代理都指向一个没人监听的端口。
 [ -z "$(git config --global --includes --get http.proxy || true)" ] || { echo "退出 Proxi 时没有关掉正在用的代理引擎配置（git 还指着它）"; cat "$support/proxi.log"; exit 1; }
 : > "$support/proxi.log"
