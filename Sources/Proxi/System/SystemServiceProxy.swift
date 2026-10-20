@@ -140,11 +140,15 @@ enum SystemServiceProxy {
         // 提交成功但应用失败时，下一次不能仅凭磁盘字典一致就宣告完成。
         private var retryIDs = Set<String>()
         private let write: Write
-        private let grant: @Sendable (AuthorizationRef) -> OSStatus
+        private let createAuthorization: @Sendable () -> (OSStatus, AuthorizationRef?)
 
-        init(write: @escaping Write, grant: @escaping @Sendable (AuthorizationRef) -> OSStatus = { RestorationSession.requestRights($0) }) {
+        init(write: @escaping Write, createAuthorization: @escaping @Sendable () -> (OSStatus, AuthorizationRef?) = {
+            var reference: AuthorizationRef?
+            let status = AuthorizationCreate(nil, nil, [], &reference)
+            return (status, reference)
+        }) {
             self.write = write
-            self.grant = grant
+            self.createAuthorization = createAuthorization
         }
 
         deinit {
@@ -156,28 +160,27 @@ enum SystemServiceProxy {
             return await withCheckedContinuation { continuation in
                 queue.async {
                     let first = self.attempt(settings, authorization: self.authorization)
-                    guard first.needsAuthorization else { continuation.resume(returning: first.result); return }
+                    // 框架持引用检查权限时已经可以提示；取消后不能在同一次操作中再弹一次。
+                    guard first.needsAuthorization, self.authorization == nil else {
+                        if first.needsAuthorization, let authorization = self.authorization {
+                            AuthorizationFree(authorization, [])
+                            self.authorization = nil
+                        }
+                        continuation.resume(returning: first.result); return
+                    }
                     let remaining = settings.filter { !first.result.succeeded.contains($0.id) }
                     func finish(_ retry: SystemServiceResult) {
                         var result = retry
                         result.succeeded = first.result.succeeded + retry.succeeded
                         continuation.resume(returning: result)
                     }
-                    if self.authorization == nil {
-                        let status = AuthorizationCreate(nil, nil, [], &self.authorization)
-                        guard status == errAuthorizationSuccess else {
-                            finish(authorizationFailure(remaining, status: status)); return
-                        }
+                    let (status, reference) = self.createAuthorization()
+                    guard status == errAuthorizationSuccess, let authorization = reference else {
+                        if let reference { AuthorizationFree(reference, []) }
+                        finish(authorizationFailure(remaining, status: status)); return
                     }
-                    guard let authorization = self.authorization else {
-                        finish(authorizationFailure(remaining, status: errAuthorizationInvalidRef)); return
-                    }
-                    let granted = self.grant(authorization)
-                    guard granted == errAuthorizationSuccess else {
-                        AuthorizationFree(authorization, [])
-                        self.authorization = nil
-                        finish(authorizationFailure(remaining, status: granted)); return
-                    }
+                    self.authorization = authorization
+                    // 让 SystemConfiguration 按实际操作申请权限，不预先申请网络偏好面板权限。
                     let retry = self.attempt(remaining, authorization: authorization)
                     if retry.needsAuthorization {
                         AuthorizationFree(authorization, [])
@@ -196,15 +199,6 @@ enum SystemServiceProxy {
             return attempt
         }
 
-        private static func requestRights(_ authorization: AuthorizationRef) -> OSStatus {
-            "system.preferences.network".withCString { name in
-                var item = AuthorizationItem(name: name, valueLength: 0, value: nil, flags: 0)
-                return withUnsafeMutablePointer(to: &item) { pointer in
-                    var rights = AuthorizationRights(count: 1, items: pointer)
-                    return AuthorizationCopyRights(authorization, &rights, nil, [.interactionAllowed, .extendRights, .preAuthorize], nil)
-                }
-            }
-        }
     }
 
     private static func authorizationFailure(_ settings: [SystemServiceSettings], status: OSStatus) -> SystemServiceResult {
