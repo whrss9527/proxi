@@ -204,16 +204,17 @@ enum CloudFile {
                 }
                 guard let winner = newest(candidates) else { return nil }
                 try writeData(encoder.encode(winner), writeURL)
+                // 版本存储的移除同样要求写协调；只处理写入成功时已捕获的集合。
+                for version in conflicts {
+                    version.resolve()
+                    // 移除失败仍保留该版本，不影响已成功写入的当前文档。
+                    try? version.remove()
+                }
                 return winner
             }
         }
         if let coordinationError { throw coordinationError }
         guard let winner = try result.get() else { return nil }
-        for version in conflicts {
-            version.resolve()
-            // 移除失败仍保留该版本，不影响已成功写入的当前文档。
-            try? version.remove()
-        }
         Log.info("iCloud 同步：解决了 \(conflicts.count) 个冲突版本，采用来自 \(winner.device) 的改动")
         return winner
     }

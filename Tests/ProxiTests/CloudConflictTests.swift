@@ -135,7 +135,10 @@ final class CloudConflictTests: XCTestCase {
         let contents = folder.appendingPathComponent("version.json")
         try CloudFile.encoder.encode(synced(1, "current")).write(to: current)
         defer {
-            for version in NSFileVersion.otherVersionsOfItem(at: current) ?? [] { try? version.remove() }
+            var error: NSError?
+            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: current, options: [], error: &error) { writeURL in
+                for version in NSFileVersion.otherVersionsOfItem(at: writeURL) ?? [] { try? version.remove() }
+            }
         }
         func addVersion(_ snapshot: SyncedConfig) throws -> NSFileVersion {
             try CloudFile.encoder.encode(snapshot).write(to: contents)
