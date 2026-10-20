@@ -52,7 +52,62 @@ final class NodeQueryTests: XCTestCase {
         XCTAssertEqual(query.sort, .delay)
         query.sort = .name
         query.onlyFavorites = true
-        XCTAssertEqual(query.apply(nodes, favorites: ["日本 Tokyo 02", "HK02 IPLC"]).map(\.name), ["HK02 IPLC", "日本 Tokyo 02"])
+        let names = query.apply(nodes, favorites: ["日本 Tokyo 02", "HK02 IPLC"]).map(\.name)
+        XCTAssertEqual(Set(names), ["日本 Tokyo 02", "HK02 IPLC"])
+        XCTAssertEqual(names.count, 2)
+        assertLocalizedNameOrder(names)
+    }
+
+    // 跨文字的先后由系统区域规则决定，数字自然顺序在两种区域设置下都必须成立。
+    func testNaturalNameSortingAndFiltering() {
+        assertRequestedLocale()
+        let input = nameSortNodes
+        var query = NodeQuery(sort: .name)
+        let names = query.apply(input, favorites: []).map(\.name)
+        XCTAssertEqual(names.count, 4)
+        XCTAssertEqual(names.filter { $0.hasPrefix("HK") }, ["HK2", "HK10"])
+        XCTAssertEqual(names.filter { $0.hasPrefix("日本") }, ["日本 2", "日本 10"])
+        assertLocalizedNameOrder(names)
+
+        query.text = "hk"
+        XCTAssertEqual(query.apply(input, favorites: []).map(\.name), ["HK2", "HK10"])
+        query.text = "日本"
+        XCTAssertEqual(query.apply(input, favorites: []).map(\.name), ["日本 2", "日本 10"])
+    }
+
+    func testFavoritesPrecedeNamesAndKeepNaturalOrder() {
+        assertRequestedLocale()
+        let groups = [["HK2", "HK10"], ["日本 2", "日本 10"]]
+        for index in groups.indices {
+            var query = NodeQuery(sort: .name)
+            let favorites = groups[index]
+            let others = groups[1 - index]
+            XCTAssertEqual(query.apply(nameSortNodes, favorites: favorites).map(\.name), favorites + others)
+            query.onlyFavorites = true
+            XCTAssertEqual(query.apply(nameSortNodes, favorites: favorites).map(\.name), favorites)
+        }
+    }
+
+    private var nameSortNodes: [ProxyNode] {
+        ["日本 10", "HK10", "日本 2", "HK2"].map {
+            ProxyNode(name: $0, type: "Shadowsocks", subscription: "测试", source: first)
+        }
+    }
+
+    private func assertLocalizedNameOrder(_ names: [String], file: StaticString = #filePath, line: UInt = #line) {
+        for (left, right) in zip(names, names.dropFirst()) {
+            XCTAssertNotEqual(left.localizedStandardCompare(right), .orderedDescending,
+                              "\(left) 应排在 \(right) 前；区域：\(Locale.current.identifier)", file: file, line: line)
+        }
+    }
+
+    private func assertRequestedLocale(file: StaticString = #filePath, line: UInt = #line) {
+        guard let expected = ProcessInfo.processInfo.environment["PROXI_TEST_LOCALE"] else { return }
+        XCTAssertEqual(Locale.current.identifier, expected, file: file, line: line)
+        let language = expected.split(separator: "_").first.map(String.init)
+        XCTAssertEqual(Locale.preferredLanguages.first?.split(separator: "-").first.map(String.init), language,
+                       file: file, line: line)
+        print("NodeQuery locale=\(Locale.current.identifier) languages=\(Locale.preferredLanguages)")
     }
 
     func testMakeGroupFromConditions() {

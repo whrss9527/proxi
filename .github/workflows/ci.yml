@@ -50,6 +50,8 @@ jobs:
         run: bash Scripts/ci/install-fish.sh
       - name: 单元测试
         run: bash Scripts/ci/test.sh
+      - name: 中英文区域名称排序
+        run: bash Scripts/ci/test-node-locales.sh
       - name: 打包和检查产物
         run: bash Scripts/ci/package.sh
       - name: 编译窗口等待工具
