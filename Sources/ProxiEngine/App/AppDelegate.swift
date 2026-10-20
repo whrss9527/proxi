@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 
 /// 代理引擎：Proxi 的可选扩展，一个单独的程序。由 Proxi 在用户同意说明、开启扩展后下载安装并启动，
 /// 平时在后台运行，没有自己的菜单栏图标（菜单栏上只有 Proxi 一个）；它的设置窗口从 Proxi 的菜单、面板和扩展页打开。
@@ -34,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var signalSources: [DispatchSourceSignal] = []
     private var pageRequestObserver: NSObjectProtocol?
+    private var terminationPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandlers()
@@ -70,10 +72,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationPending else { return .terminateLater }
+        terminationPending = true
+        Task { @MainActor in
+            await AppState.shared.handleExit()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        AppState.shared.handleExit()
         Log.info("代理引擎已退出")
         Log.flush()
+    }
+
+    /// terminateLater 会进入嵌套循环；先离开主队列回调，否则异步清理回不到 MainActor。
+    static func requestTermination() {
+        RunLoop.main.perform(inModes: [.common]) {
+            MainActor.assumeIsolated { NSApp.terminate(nil) }
+        }
+        CFRunLoopWakeUp(CFRunLoopGetMain())
     }
 
     /// kill、logout 这类信号也走正常退出：停内核。
@@ -82,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             signal(signalNumber, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
             source.setEventHandler {
-                NSApp.terminate(nil)
+                MainActor.assumeIsolated { Self.requestTermination() }
             }
             source.resume()
             signalSources.append(source)

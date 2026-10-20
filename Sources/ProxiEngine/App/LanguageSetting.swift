@@ -38,7 +38,7 @@ enum LanguageSetting {
                     onError(error.localizedDescription)
                 } else {
                     AppState.shared.relaunching = true
-                    NSApp.terminate(nil)
+                    AppDelegate.requestTermination()
                 }
             }
         }

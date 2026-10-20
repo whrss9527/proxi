@@ -421,6 +421,7 @@ struct CorePage: View {
     @ObservedObject var core: CoreDownload
     @ObservedObject var engine: Engine
     @State private var logText = ""
+    @State private var coreActionPending = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -433,16 +434,13 @@ struct CorePage: View {
                     LabeledContent(L("位置"), value: CoreDownload.directory.path)
                     HStack {
                         Button(core.isReady ? L("重新下载") : L("下载")) {
-                            core.remove()
-                            core.install()
+                            changeCore(reinstall: true)
                         }
-                        .disabled(core.isBusy)
+                        .disabled(coreActionPending || core.isBusy)
                         Button(L("删除内核"), role: .destructive) {
-                            // stopCore 连状态一起清掉：不然还显示在运行，写给 Proxi 的状态也说内核在运行。
-                            engine.stopCore()
-                            core.remove()
+                            changeCore(reinstall: false)
                         }
-                        .disabled(core.isBusy || !core.isReady)
+                        .disabled(coreActionPending || core.isBusy || !core.isReady)
                     }
                     Text(L("下载地址：%@；下载后先核对写在程序里的 SHA-256，对不上就不用。删除后代理引擎不能运行，下次打开时重新下载。", CorePin.asset()?.url.absoluteString ?? ""))
                         .font(.caption)
@@ -469,6 +467,19 @@ struct CorePage: View {
             .scrollContentBackground(.hidden)
         }
         .task { logText = Log.tail(lines: 120) }
+    }
+
+    @MainActor
+    private func changeCore(reinstall: Bool) {
+        guard !coreActionPending, !core.isBusy else { return }
+        coreActionPending = true
+        Task { @MainActor in
+            defer { coreActionPending = false }
+            await engine.stopCore {
+                core.remove()
+                if reinstall { core.install() }
+            }
+        }
     }
 
     @ViewBuilder
