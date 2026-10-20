@@ -192,6 +192,7 @@ enum CloudFile {
             return try decoder.decode(SyncedConfig.self, from: data)
         }
         let captured = try conflicts.map { try decode($0.url) }
+        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
         var coordinationError: NSError?
         var result: Result<SyncedConfig?, Error> = .failure(CocoaError(.fileWriteUnknown))
         // 更新而非替换意图：先让呈现者保存待提交的修改，再在同一协调内重读、比较并写回。
