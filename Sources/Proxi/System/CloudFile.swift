@@ -196,7 +196,7 @@ enum CloudFile {
         var coordinationError: NSError?
         var result: Result<SyncedConfig?, Error> = .failure(CocoaError(.fileWriteUnknown))
         // 更新而非替换意图：先让呈现者保存待提交的修改，再在同一协调内重读、比较并写回。
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { writeURL in
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forMerging, error: &coordinationError) { writeURL in
             result = Result {
                 var candidates = captured
                 if FileManager.default.fileExists(atPath: writeURL.path) {
