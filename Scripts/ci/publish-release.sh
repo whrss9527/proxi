@@ -20,6 +20,7 @@ if grep -qiE '代理引擎|Proxi-Engine|mihomo|内核|机场|翻墙|科学上网
   echo "发布说明含不应公开的文字"; exit 1
 fi
 printf '\n已用 Developer ID 签名并通过苹果公证，Intel 与 Apple 芯片均通过最终附件安装门禁。\n' >> notes.md
+printf '\n手动安装请下载 Proxi-macos.dmg，打开后把 Proxi 拖到右侧「应用程序」文件夹。ZIP 附件保留用于应用内更新。\n' >> notes.md
 if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
   git fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
   [ "$(git rev-parse "$TAG^{commit}")" = "$RELEASE_SOURCE_SHA" ] || { echo "标签已改变"; exit 1; }
@@ -58,7 +59,7 @@ if not isinstance(value, dict) or value.get("apiUrl") != f"https://api.github.co
 PYIDENTITY
 }
 confirm_writable_draft
-gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$directory"/*.zip "$directory/SHA256SUMS.txt" --clobber
+gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$directory"/*.zip "$directory"/*.dmg "$directory/SHA256SUMS.txt" --clobber
 # 核对实际 GitHub 下载的草稿附件与 canonical 摘要一致，再把草稿公开。
 downloaded=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/proxi-published.XXXXXX")
 trap 'rm -rf "$downloaded"' EXIT

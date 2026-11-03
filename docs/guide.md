@@ -7,7 +7,7 @@ Proxi 是给开发者用的代理开关：一键把系统代理、终端、git �
 ## 安装
 
 1. 用 [Homebrew](https://brew.sh)：`brew install --cask whrss9527/tap/proxi`，同时装好 `proxi` 命令。
-2. 或者在 [Releases](../../releases) 下载 `Proxi-macos.zip`（通用包，Intel 和 Apple 芯片都能用；`-arm64` / `-x86_64` 结尾的是只含一种芯片的精简包），解压后把 `Proxi.app` 拖到「应用程序」。
+2. 或者在 [Releases](../../releases) 下载 `Proxi-macos.dmg`（通用包，Intel 和 Apple 芯片都能用），打开后把 `Proxi.app` 拖到右侧「应用程序」。ZIP 附件保留用于应用内更新，也可以解压后手动安装；`-arm64` / `-x86_64` 结尾的是只含一种芯片的精简包。
 3. 用 Developer ID 签名并经过苹果公证的版本（Release 说明末尾会注明），解压后双击就能打开。没有公证的版本第一次打开会被系统拦下：macOS 15 及以后先双击一次，再到「系统设置 → 隐私与安全性」底部点「仍要打开」；macOS 14 在 `Proxi.app` 上右键 → 打开 → 再点「打开」；也可以在终端运行 `xattr -dr com.apple.quarantine /Applications/Proxi.app`。
 4. 需要 macOS 14 或更新版本。
 5. 之后的版本在程序里一键更新：有新版本时面板里会出现更新条，点「更新」就行，也可以在「关于」页或通知上点「立即更新」。如果程序是在下载文件夹里直接打开的（系统会把它放在只读的临时位置运行），更新时会自动装进「应用程序」，第一次可能会问能否访问「下载」文件夹（用来把旧的那份移到废纸篓）。

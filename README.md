@@ -56,7 +56,7 @@ brew install --cask whrss9527/tap/proxi
 
 Or by hand:
 
-1. Download `Proxi-macos.zip` from [Releases](../../releases), unzip it and drag `Proxi.app` to Applications.
+1. Download `Proxi-macos.dmg` from [Releases](../../releases), open it and drag `Proxi.app` to Applications on the right.
 2. Double-click to open it. For opening versions that weren't notarized, see the [user guide](docs/guide.md#安装) (in Chinese).
 3. When a new version comes out, click "Update" in the panel.
 

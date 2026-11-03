@@ -44,5 +44,6 @@ for name in Proxi-macos.zip "Proxi-macos-${expected}.zip" "Proxi-Engine-${versio
   verify_notarized_app "$app"
   echo "$expected 下载验证通过：$name"
 done
+"${FRIT_RELEASE:?需要 DMG 验证脚本目录}/verify-dmg.sh" "$directory/Proxi-macos.dmg" "$directory/Proxi-macos.zip"
 # 回执只能在所有原生验证通过之后写出，绑定本次源码、归档摘要和运行编号。
 python3 "$integrity" receipt "${identity[@]}" --architecture "$expected" --receipts "${RELEASE_RECEIPTS_DIR:?}"
