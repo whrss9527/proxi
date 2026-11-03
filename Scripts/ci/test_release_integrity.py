@@ -41,6 +41,13 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.write_receipt("x86_64",dict(self.candidate,runAttempt="2"))
         with self.assertRaises(ValueError): integrity.check_receipts(self.candidate,self.receipts)
 
+    def test_missing_or_changed_dmg_cannot_publish(self):
+        image = self.root / "Proxi-macos.dmg"
+        image.write_bytes(b"changed")
+        with self.assertRaises(ValueError): integrity.check_candidate(self.root, self.identity)
+        image.unlink()
+        with self.assertRaises(ValueError): integrity.make_candidate(self.root,"v0.17.0","a"*40,"123","1","A56J9KFVGV")
+
     def test_receipt_architecture_cannot_be_substituted(self):
         self.write_receipt("arm64")
         (self.receipts/"x86_64.json").write_text((self.receipts/"arm64.json").read_text())

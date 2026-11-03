@@ -19,7 +19,7 @@ def digest(path):
 
 def archive_names(tag):
     version = tag[1:]
-    return sorted(["Proxi-macos.zip", "Proxi-macos-arm64.zip", "Proxi-macos-x86_64.zip",
+    return sorted(["Proxi-macos.zip", "Proxi-macos.dmg", "Proxi-macos-arm64.zip", "Proxi-macos-x86_64.zip",
                    "ProxySwitch-macos.zip", "ProxySwitch-macos-arm64.zip",
                    "ProxySwitch-macos-x86_64.zip", f"Proxi-Engine-{version}.zip"])
 
@@ -42,7 +42,7 @@ def make_candidate(directory, tag, source_sha, run_id, attempt, team_id):
              "runAttempt": attempt, "teamId": team_id}
     validate_identity(value)
     expected = archive_names(tag)
-    actual = sorted(path.name for path in directory.glob("*.zip"))
+    actual = sorted(path.name for path in directory.iterdir() if path.suffix in (".zip", ".dmg"))
     if actual != expected:
         raise ValueError("候选归档清单不完整或含额外归档")
     value["archives"] = {name: digest(directory / name) for name in expected}

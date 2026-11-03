@@ -68,6 +68,12 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: 选择 Xcode
         run: bash Scripts/ci/select-xcode.sh
+      - uses: actions/checkout@v4
+        with:
+          repository: whrss9527/frit
+          ref: bb416f3399ef522a1d114dd5382b3ab9ba213e4a
+          path: .frit
+          persist-credentials: false
       - name: 单元测试
         run: swift test
       - name: 导入 Developer ID 证书
@@ -88,10 +94,21 @@ jobs:
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
         run: Scripts/notarize.sh dist/Proxi-macos.zip dist/Proxi-macos-arm64.zip dist/Proxi-macos-x86_64.zip "dist/Proxi-Engine-${TAG#v}.zip"
+      - name: 制作并公证拖拽安装包
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+        run: |
+          .frit/scripts/release/package-dmg.sh dist/Proxi-macos.zip dist/Proxi-macos.dmg
+          .frit/scripts/release/notarize.sh dist/Proxi-macos.dmg
       - name: 固定候选附件及摘要
         run: |
           for suffix in "" -arm64 -x86_64; do cp "dist/Proxi-macos${suffix}.zip" "dist/ProxySwitch-macos${suffix}.zip"; done
-          (cd dist && shasum -a 256 Proxi-macos.zip Proxi-macos-arm64.zip Proxi-macos-x86_64.zip ProxySwitch-macos.zip ProxySwitch-macos-arm64.zip ProxySwitch-macos-x86_64.zip "Proxi-Engine-${TAG#v}.zip" > SHA256SUMS.txt)
+          (cd dist && shasum -a 256 Proxi-macos.zip Proxi-macos-arm64.zip Proxi-macos-x86_64.zip ProxySwitch-macos.zip ProxySwitch-macos-arm64.zip ProxySwitch-macos-x86_64.zip "Proxi-Engine-${TAG#v}.zip" Proxi-macos.dmg > SHA256SUMS.txt)
           team=$(codesign -dvv dist/Proxi.app 2>&1 | sed -n 's/^TeamIdentifier=//p')
           python3 Scripts/ci/release-integrity.py candidate --directory dist --tag "$TAG" --source-sha "$(git rev-parse HEAD)" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --team-id "$team"
       - uses: actions/upload-artifact@v4
@@ -99,6 +116,7 @@ jobs:
           name: proxi-release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/*.zip
+            dist/*.dmg
             dist/SHA256SUMS.txt
             dist/release-candidate.json
           if-no-files-found: error
@@ -137,10 +155,17 @@ jobs:
         with:
           name: proxi-release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: candidate
+      - uses: actions/checkout@v4
+        with:
+          repository: whrss9527/frit
+          ref: bb416f3399ef522a1d114dd5382b3ab9ba213e4a
+          path: .frit
+          persist-credentials: false
       - name: 验证最终附件的签名、票据和 Gatekeeper
         env:
           RELEASE_SOURCE_SHA: ${{ needs.build.outputs.sha }}
           RELEASE_RECEIPTS_DIR: ${{ runner.temp }}/release-receipts
+          FRIT_RELEASE: .frit/scripts/release
         run: bash Scripts/ci/verify-release-archives.sh candidate "${TAG#v}" "${{ matrix.architecture }}"
       - uses: actions/upload-artifact@v4
         with:

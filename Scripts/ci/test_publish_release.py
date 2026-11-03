@@ -48,7 +48,7 @@ elif tool=="gh":
     elif args[:2]==["release","download"]:
         target=Path(args[args.index("--dir")+1])
         source=Path(os.environ["FAKE_CANDIDATE"])
-        for name in [p.name for p in source.glob("*.zip")]+["SHA256SUMS.txt"]:
+        for name in [p.name for p in source.iterdir() if p.suffix in (".zip", ".dmg")]+["SHA256SUMS.txt"]:
             shutil.copyfile(source/name,target/name)
         if os.environ["FAKE_CORRUPT"]=="1":(target/"Proxi-macos.zip").write_bytes(b"changed after upload")
         if os.environ["FAKE_EXTRA"]=="1":(target/"unexpected.zip").write_bytes(b"extra attachment")
