@@ -52,6 +52,18 @@ enum ProfilePalette {
     static func color(at index: Int) -> String {
         colors[((index % colors.count) + colors.count) % colors.count]
     }
+
+    static func name(for color: String) -> String {
+        switch color.lowercased() {
+        case "#16a34a": return L("绿色")
+        case "#2563eb": return L("蓝色")
+        case "#7c3aed": return L("紫色")
+        case "#db2777": return L("粉色")
+        case "#ea580c": return L("橙色")
+        case "#0891b2": return L("青色")
+        default: return L("颜色") + " " + color
+        }
+    }
 }
 
 /// 一套代理配置：指向你自己已经在用的代理服务器，比如公司代理、内网网关，

@@ -4,6 +4,7 @@ import SwiftUI
 struct ProfilesPage: View {
     @ObservedObject var state: AppState
     @ObservedObject var navigation: SettingsNavigation
+    var actions = ProfileUIActions()
     @State private var showDetect = false
 
     var body: some View {
@@ -19,7 +20,7 @@ struct ProfilesPage: View {
             .padding(.bottom, 24)
         }
         .sheet(isPresented: $showDetect) {
-            DetectSheet(state: state) { detected in
+            DetectSheet(state: state, detectProxies: actions.detect) { detected in
                 var profile = Profile(name: detected.suggestedName, color: ProfilePalette.color(at: state.config.profiles.count), kind: detected.kind, host: detected.host, port: detected.port)
                 profile.name = uniqueName(profile.name)
                 state.addProfile(profile)
@@ -116,9 +117,9 @@ struct ProfilesPage: View {
     private var editor: some View {
         if let id = navigation.selectedProfileID, let profile = state.config.profile(id: id) {
             ProfileEditor(state: state, profile: profile, onDelete: {
-                state.remove(profile)
+                actions.removeProfile(state, profile)
                 navigation.selectedProfileID = state.config.profiles.first?.id
-            })
+            }, actions: actions)
             .id(profile.id)
         } else {
             VStack(spacing: 10) {
@@ -153,21 +154,25 @@ struct ProfileEditor: View {
     @State var draft: Profile
     let original: Profile
     let onDelete: () -> Void
+    private let actions: ProfileUIActions
     @State private var portText: String
     /// 钥匙串里的密码（编辑时显示在密码框里，保存时写回钥匙串）。打开编辑页时读一次，不在每次重画时读。
     @State private var passwordText = ""
     @State private var originalPassword = ""
     @State private var passwordLoaded = false
     @State private var problem: String?
-    @State private var testing = false
-    @State private var result: TestResult?
+    @StateObject private var connectionTest: ProfileTestState
     @State private var saved = false
     @State private var confirmingDelete = false
 
-    init(state: AppState, profile: Profile, onDelete: @escaping () -> Void) {
+    init(state: AppState, profile: Profile, onDelete: @escaping () -> Void, actions: ProfileUIActions = ProfileUIActions()) {
         self.state = state
         self.original = profile
         self.onDelete = onDelete
+        self.actions = actions
+        _connectionTest = StateObject(wrappedValue: ProfileTestState { input in
+            await actions.test(input.profile, input.password, input.testURL)
+        })
         _draft = State(initialValue: profile)
         _portText = State(initialValue: String(profile.port))
     }
@@ -175,7 +180,7 @@ struct ProfileEditor: View {
     private func loadPassword() {
         guard !passwordLoaded else { return }
         passwordLoaded = true
-        let saved = original.hasPassword ? (ProxyKeychain.password(for: original.id) ?? "") : ""
+        let saved = original.hasPassword ? (actions.readPassword(original.id) ?? "") : ""
         originalPassword = saved
         passwordText = saved
     }
@@ -204,6 +209,9 @@ struct ProfileEditor: View {
                                 }
                             }
                             .buttonStyle(.plain)
+                            .help(ProfilePalette.name(for: hex))
+                            .accessibilityLabel(Text(ProfilePalette.name(for: hex)))
+                            .accessibilityAddTraits(draft.color == hex ? .isSelected : [])
                         }
                     }
                     Picker(L("类型"), selection: $draft.kind) {
@@ -291,7 +299,7 @@ struct ProfileEditor: View {
                         }
                     }
                 }
-                if let result {
+                if let result = connectionTest.result {
                     Section(L("测试结果")) {
                         Label(result.ok ? L("%@，%@", result.latencyText, result.message) : result.message, systemImage: result.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
                             .foregroundStyle(result.ok ? Color.green : Color.red)
@@ -302,6 +310,10 @@ struct ProfileEditor: View {
             .scrollContentBackground(.hidden)
             .onSubmit { save() }
             .onAppear(perform: loadPassword)
+            .onDisappear { connectionTest.cancel() }
+            .onChange(of: draft) { _, _ in connectionTest.inputChanged(testInput) }
+            .onChange(of: passwordText) { _, _ in connectionTest.inputChanged(testInput) }
+            .onChange(of: state.config.testURL) { _, _ in connectionTest.inputChanged(testInput) }
             // 别处改了这条配置（iCloud 同步、代理引擎换了端口）、这里又没有没保存的改动时跟着更新，免得保存时把旧的写回去。
             .onChange(of: original) { old, new in
                 if draft == old {
@@ -328,14 +340,14 @@ struct ProfileEditor: View {
                 Button {
                     test()
                 } label: {
-                    if testing {
+                    if connectionTest.testing {
                         ProgressView().controlSize(.small)
                     } else {
                         Label(L("测试连接"), systemImage: "speedometer")
                     }
                 }
                 .accessibilityLabel(Text(L("测试连接")))
-                .disabled(testing)
+                .disabled(connectionTest.testing)
                 Spacer()
                 if let problem {
                     Text(problem)
@@ -399,18 +411,18 @@ struct ProfileEditor: View {
         let passwordChanged = passwordText != originalPassword
         let user = draft.username.trimmingCharacters(in: .whitespaces)
         if draft.kind == .pac || user.isEmpty {
-            ProxyKeychain.delete(for: draft.id)
+            actions.deletePassword(draft.id)
             draft.hasPassword = false
         } else if passwordText.isEmpty {
             // 密码框空着：原来有密码、被用户清空了才删。这台 Mac 的钥匙串里本来就没有（配置是从别的 Mac 同步来的）时
             // 保留「有密码」的标记，开启时再问，不然这个标记同步回去，别的 Mac 开启时也不带密码了。
             if !originalPassword.isEmpty {
-                ProxyKeychain.delete(for: draft.id)
+                actions.deletePassword(draft.id)
                 draft.hasPassword = false
             }
         } else if passwordText != originalPassword || !draft.hasPassword {
             do {
-                try ProxyKeychain.set(passwordText, for: draft.id)
+                try actions.savePassword(passwordText, draft.id)
                 draft.hasPassword = true
             } catch {
                 problem = error.localizedDescription
@@ -424,6 +436,7 @@ struct ProfileEditor: View {
     }
 
     private func test() {
+        connectionTest.cancel()
         if draft.kind != .pac {
             splitPastedAddress(draft.host)
         }
@@ -432,20 +445,18 @@ struct ProfileEditor: View {
             return
         }
         problem = nil
-        testing = true
-        let profile = draft
-        let password = passwordText
-        let testURL = state.config.testURL
-        Task { @MainActor in
-            result = await ProxyTester.test(profile: profile, password: password, testURL: testURL)
-            testing = false
-        }
+        connectionTest.start(testInput)
+    }
+
+    private var testInput: ProfileTestInput {
+        ProfileTestInput(profile: draft, password: passwordText, testURL: state.config.testURL)
     }
 }
 
 /// 自动检测本机代理软件。
 struct DetectSheet: View {
     @ObservedObject var state: AppState
+    var detectProxies: @MainActor (String) async -> [DetectedProxy] = { await LocalProxyDetector.detect(testURL: $0) }
     let onAdd: (DetectedProxy) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var detecting = true
@@ -516,7 +527,7 @@ struct DetectSheet: View {
     @MainActor private func detect() async {
         detecting = true
         let testURL = state.config.testURL
-        let result = await LocalProxyDetector.detect(testURL: testURL)
+        let result = await detectProxies(testURL)
         guard !Task.isCancelled else { return }
         found = result
         detecting = false
