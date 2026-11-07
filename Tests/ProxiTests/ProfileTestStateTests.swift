@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import Proxi
 
@@ -13,6 +14,8 @@ final class ProfileTestStateTests: XCTestCase {
         let state = ProfileTestState { _ in
             await withCheckedContinuation { response = $0; started.fulfill() }
         }
+        var visibleResponses: [String] = []
+        let subscription = state.$result.compactMap { $0 }.sink { visibleResponses.append($0.message) }
         let first = input()
         let pending = state.start(first)
         await fulfillment(of: [started], timeout: 2)
@@ -25,6 +28,8 @@ final class ProfileTestStateTests: XCTestCase {
         response?.resume(returning: TestResult(ok: true, latencyMs: 1, message: "old response"))
         await pending.value
         XCTAssertNil(state.result)
+        XCTAssertTrue(visibleResponses.isEmpty, "A stale response must not trigger result scrolling")
+        withExtendedLifetime(subscription) {}
     }
 
     func testReplacementRequestKeepsItsResultWhenOldResponseArrivesLast() async {
