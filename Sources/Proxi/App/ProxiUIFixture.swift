@@ -81,6 +81,24 @@ final class ProxiUIFixture: NSObject, NSApplicationDelegate, NSWindowDelegate, O
     @objc private func showEditor(_ sender: Any?) { openEditor() }
 
     func closeEditor() { editorWindow?.close() }
+
+    func resizeEditor(minimum: Bool) {
+        openEditor()
+        guard let window = editorWindow else { return }
+        let size = minimum ? NSSize(width: 800, height: 570) : NSSize(width: 1120, height: 760)
+        let center = NSPoint(x: window.frame.midX, y: window.frame.midY)
+        window.setFrame(NSRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height), display: true)
+        event = "Window \(Int(window.frame.width))×\(Int(window.frame.height)) · content \(Int(window.contentLayoutRect.width))×\(Int(window.contentLayoutRect.height))"
+    }
+
+    func addManyProfiles() {
+        guard let state else { return }
+        guard state.config.profiles.count < 14 else { return }
+        for index in state.config.profiles.count..<14 {
+            state.config.profiles.append(Profile(name: "Long work profile \(index) — 工作代理配置", color: ProfilePalette.color(at: index), host: "fixture-\(index).invalid", port: 8000 + index)) // l10n-ignore: bilingual fixture data
+        }
+        event = "14 synthetic profiles; no persistence"
+    }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === editorWindow else { return }
         window.contentView = nil
@@ -181,6 +199,11 @@ private struct FixtureControls: View {
                 Button(action: { fixture.finishTests(ok: true) }) { Text(verbatim: "Complete test") }
                 Button(action: { fixture.finishTests(ok: false) }) { Text(verbatim: "Return HTTP 503") }
                 Button(action: { fixture.finishDetections() }) { Text(verbatim: "Complete detection") }
+            }
+            HStack {
+                Button(action: { fixture.resizeEditor(minimum: true) }) { Text(verbatim: "Minimum 800×570") }
+                Button(action: { fixture.resizeEditor(minimum: false) }) { Text(verbatim: "Regular 1120×760") }
+                Button(action: { fixture.addManyProfiles() }) { Text(verbatim: "14 long profiles") }
             }
             HStack {
                 Button(action: { NSApp.appearance = NSAppearance(named: .aqua) }) { Text(verbatim: "Light") }
