@@ -971,9 +971,7 @@ final class HelperCoreRunner: @unchecked Sendable {
 
     /// 内核日志的最后几行（助手写的日志别人也能读）。
     var logTail: String {
-        guard let data = FileManager.default.contents(atPath: HelperPaths.coreLog) else { return "" }
-        let text = String(decoding: data.suffix(64 * 1024), as: UTF8.self)
-        return text.split(separator: "\n").suffix(200).joined(separator: "\n")
+        HelperLogTail.read(path: HelperPaths.coreLog)
     }
 }
 

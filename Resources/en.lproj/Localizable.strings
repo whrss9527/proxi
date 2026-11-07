@@ -367,6 +367,12 @@
 "在左边选择一个配置" = "Select a profile on the left";
 "名称" = "Name";
 "颜色" = "Color";
+"绿色" = "Green";
+"蓝色" = "Blue";
+"紫色" = "Purple";
+"粉色" = "Pink";
+"橙色" = "Orange";
+"青色" = "Cyan";
 "类型" = "Type";
 "PAC 地址" = "PAC URL";
 "主机" = "Host";

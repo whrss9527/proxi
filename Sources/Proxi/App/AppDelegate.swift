@@ -4,6 +4,9 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static func main() {
+#if PROXI_UI_FIXTURE
+        ProxiUIFixture.run()
+#else
         // 带子命令运行（proxi status、proxi mcp……）时是命令行工具，不启动界面。
         if CommandLineTool.shouldHandle(CommandLine.arguments) {
             exit(CommandLineTool.run(CommandLine.arguments))
@@ -25,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 只有菜单栏图标，不在 Dock 里显示。
         app.setActivationPolicy(.accessory)
         app.run()
+#endif
     }
 
     private var statusController: StatusItemController?

@@ -30,7 +30,8 @@ enum ProxyTester {
         request.httpMethod = "GET"
         let started = Date()
         do {
-            let (_, response) = try await session.data(for: request)
+            // 只测连通性和响应延迟，不等待或缓存测速地址的完整正文；退出时取消剩余下载。
+            let (_, response) = try await session.bytes(for: request)
             let millis = Int(Date().timeIntervalSince(started) * 1000)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let route = profile.kind == .pac ? L("按 PAC 脚本") : L("经代理")
@@ -172,23 +173,43 @@ enum LocalProxyDetector {
 
     /// 找出能当代理用的本机端口：先看监听列表和常见端口，再逐个经它访问测速地址确认。
     static func detect(testURL: String) async -> [DetectedProxy] {
+        guard !Task.isCancelled else { return [] }
+        let currentListeners = await listeners()
+        return await detect(listeners: currentListeners, commonPorts: commonPorts, reachable: { port in
+            await ProxyTester.reachable(host: "127.0.0.1", port: port, timeout: 0.5)
+        }, test: { profile in
+            await ProxyTester.test(profile: profile, testURL: testURL, timeout: 4)
+        })
+    }
+
+    /// 将探测操作作为依赖传入，测试取消边界时无需扫描真实端口。
+    static func detect(listeners: [Listener], commonPorts: [Int],
+                       reachable: @escaping @Sendable (Int) async -> Bool,
+                       test: @escaping @Sendable (Profile) async -> TestResult) async -> [DetectedProxy] {
+        guard !Task.isCancelled else { return [] }
         var candidates: [Int: String] = [:]
-        for listener in await listeners() where listener.port > 0 {
+        for listener in listeners where listener.port > 0 {
             candidates[listener.port] = listener.process
         }
         for port in commonPorts where candidates[port] == nil {
-            if await ProxyTester.reachable(host: "127.0.0.1", port: port, timeout: 0.5) {
+            guard !Task.isCancelled else { return [] }
+            let available = await reachable(port)
+            guard !Task.isCancelled else { return [] }
+            if available {
                 candidates[port] = ""
             }
         }
         var found: [DetectedProxy] = []
         await withTaskGroup(of: DetectedProxy?.self) { group in
             for (port, process) in candidates {
+                guard !Task.isCancelled else { break }
                 group.addTask {
                     for kind in [ProxyKind.http, ProxyKind.socks5] {
+                        guard !Task.isCancelled else { return nil }
                         var profile = Profile(name: "", color: "", kind: kind, host: "127.0.0.1", port: port)
                         profile.kind = kind
-                        let result = await ProxyTester.test(profile: profile, testURL: testURL, timeout: 4)
+                        let result = await test(profile)
+                        guard !Task.isCancelled else { return nil }
                         if result.ok {
                             return DetectedProxy(host: "127.0.0.1", port: port, kind: kind, process: process, latencyMs: result.latencyMs)
                         }
@@ -197,9 +218,11 @@ enum LocalProxyDetector {
                 }
             }
             for await item in group {
+                guard !Task.isCancelled else { group.cancelAll(); break }
                 if let item { found.append(item) }
             }
         }
+        guard !Task.isCancelled else { return [] }
         return found.sorted { $0.port < $1.port }
     }
 }
