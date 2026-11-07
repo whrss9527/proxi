@@ -30,7 +30,8 @@ enum ProxyTester {
         request.httpMethod = "GET"
         let started = Date()
         do {
-            let (_, response) = try await session.data(for: request)
+            // 只测连通性和响应延迟，不等待或缓存测速地址的完整正文；退出时取消剩余下载。
+            let (_, response) = try await session.bytes(for: request)
             let millis = Int(Date().timeIntervalSince(started) * 1000)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let route = profile.kind == .pac ? L("按 PAC 脚本") : L("经代理")

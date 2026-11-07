@@ -334,6 +334,7 @@ struct ProfileEditor: View {
                         Label(L("测试连接"), systemImage: "speedometer")
                     }
                 }
+                .accessibilityLabel(Text(L("测试连接")))
                 .disabled(testing)
                 Spacer()
                 if let problem {
