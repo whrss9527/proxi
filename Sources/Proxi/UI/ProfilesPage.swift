@@ -450,6 +450,7 @@ struct DetectSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var detecting = true
     @State private var found: [DetectedProxy] = []
+    @State private var scanID = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -497,7 +498,10 @@ struct DetectSheet: View {
                 }
             }
             HStack {
-                Button(L("重新检测")) { detect() }
+                Button(L("重新检测")) {
+                    detecting = true
+                    scanID += 1
+                }
                     .disabled(detecting)
                 Spacer()
                 Button(L("关闭‖按钮")) { dismiss() }
@@ -506,15 +510,15 @@ struct DetectSheet: View {
         }
         .padding(20)
         .frame(width: 440)
-        .task { detect() }
+        .task(id: scanID) { await detect() }
     }
 
-    private func detect() {
+    @MainActor private func detect() async {
         detecting = true
         let testURL = state.config.testURL
-        Task { @MainActor in
-            found = await LocalProxyDetector.detect(testURL: testURL)
-            detecting = false
-        }
+        let result = await LocalProxyDetector.detect(testURL: testURL)
+        guard !Task.isCancelled else { return }
+        found = result
+        detecting = false
     }
 }
