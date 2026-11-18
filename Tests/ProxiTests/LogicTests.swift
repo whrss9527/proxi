@@ -1,4 +1,3 @@
-import FritCore
 import XCTest
 @testable import Proxi
 
