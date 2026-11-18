@@ -334,7 +334,7 @@ enum HelperInstaller {
 
     /// 内核程序的 SHA-256 是不是认可的（CorePin 里写死的）；不是就删掉并报错。
     static func verifyCore(_ path: String, removeIfWrong: Bool) throws {
-        let hash = (try? Checksums.sha256(of: URL(fileURLWithPath: path))) ?? ""
+        let hash = (try? ProxiChecksums.sha256(of: URL(fileURLWithPath: path))) ?? ""
         guard CorePin.binarySHA256s.contains(hash) else {
             if removeIfWrong { unlink(path) }
             throw HelperError(L("内核的校验和不对（%@），没有安装", hash.isEmpty ? L("读不了") : String(hash.prefix(12))), diagnosticCode: "core_checksum")
@@ -635,7 +635,7 @@ final class HelperDaemon: @unchecked Sendable {
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: HelperPaths.core) else { throw HelperError(L("助手里没有内核，请重新安装助手")) }
         // 每次启动前都校验：只运行认可的内核。
-        let hash = (try? Checksums.sha256(of: URL(fileURLWithPath: HelperPaths.core))) ?? ""
+        let hash = (try? ProxiChecksums.sha256(of: URL(fileURLWithPath: HelperPaths.core))) ?? ""
         guard CorePin.binarySHA256s.contains(hash) else {
             Self.log("内核的校验和不对（\(hash)），不启动")
             throw HelperError(L("助手里的内核校验和不对，请重新安装助手"))
