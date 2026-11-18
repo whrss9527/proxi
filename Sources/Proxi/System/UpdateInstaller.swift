@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 /// shasum -a 256 输出的校验文件：每行「哈希  文件名」。
-enum Checksums {
+enum ProxiChecksums {
     static func parse(_ text: String) -> [String: String] {
         var result: [String: String] = [:]
         for line in text.split(whereSeparator: \.isNewline) {
@@ -226,9 +226,9 @@ enum UpdateInstaller {
             }
         }
         guard let text else { throw lastError }
-        let expected = Checksums.parse(text)
+        let expected = ProxiChecksums.parse(text)
         guard let hash = expected[archive.lastPathComponent] else { throw UpdateError.checksumsMissing }
-        let actual = try Checksums.sha256(of: archive)
+        let actual = try ProxiChecksums.sha256(of: archive)
         guard actual == hash else { throw UpdateError.checksumMismatch }
     }
 

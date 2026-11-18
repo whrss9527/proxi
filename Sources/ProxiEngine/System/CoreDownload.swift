@@ -123,17 +123,17 @@ final class CoreDownload: ObservableObject {
             let archive = staging.appendingPathComponent("mihomo.gz")
             try await download(asset.url, title: L("内核 %@", CorePin.version), to: archive)
             phase = .verifying
-            guard try Checksums.sha256(of: archive) == asset.archiveSHA256 else { throw CoreDownloadError.checksum(asset.file) }
+            guard try ProxiChecksums.sha256(of: archive) == asset.archiveSHA256 else { throw CoreDownloadError.checksum(asset.file) }
             let result = try await Shell.run("/usr/bin/gunzip", ["-f", archive.path], timeout: 120)
             let binary = staging.appendingPathComponent("mihomo")
             guard result.succeeded, fm.fileExists(atPath: binary.path) else { throw CoreDownloadError.extract(result.trimmedOutput) }
-            guard try Checksums.sha256(of: binary) == asset.binarySHA256 else { throw CoreDownloadError.checksum(CoreBinary.name) }
+            guard try ProxiChecksums.sha256(of: binary) == asset.binarySHA256 else { throw CoreDownloadError.checksum(CoreBinary.name) }
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
             // GeoIP 数据库
             let geoIP = staging.appendingPathComponent("Country.mmdb")
             try await download(CorePin.geoIPURL, title: L("GeoIP 数据库"), to: geoIP)
             phase = .verifying
-            guard try Checksums.sha256(of: geoIP) == CorePin.geoIPSHA256 else { throw CoreDownloadError.checksum("Country.mmdb") }
+            guard try ProxiChecksums.sha256(of: geoIP) == CorePin.geoIPSHA256 else { throw CoreDownloadError.checksum("Country.mmdb") }
             // 都对了才放进去。
             try fm.createDirectory(at: Self.directory, withIntermediateDirectories: true)
             for (source, target) in [(binary, Self.coreURL), (geoIP, Self.geoIPURL)] {
@@ -180,8 +180,8 @@ final class CoreDownload: ObservableObject {
     nonisolated static func installedFilesValid() -> Bool {
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: coreURL.path), fm.fileExists(atPath: geoIPURL.path),
-              let core = try? Checksums.sha256(of: coreURL), CorePin.binarySHA256s.contains(core),
-              let geo = try? Checksums.sha256(of: geoIPURL), geo == CorePin.geoIPSHA256 else {
+              let core = try? ProxiChecksums.sha256(of: coreURL), CorePin.binarySHA256s.contains(core),
+              let geo = try? ProxiChecksums.sha256(of: geoIPURL), geo == CorePin.geoIPSHA256 else {
             return false
         }
         return true

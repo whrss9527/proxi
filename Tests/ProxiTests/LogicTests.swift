@@ -300,14 +300,14 @@ final class ParsingTests: XCTestCase {
         DEADBEEF  太短的
         5891B5B522D5DF086D0FF0B110FBD9D21BB4FC7163AF34D08286A2E846F6BE03 *hello.txt
         """
-        XCTAssertEqual(Proxi.Checksums.parse(text), [
+        XCTAssertEqual(ProxiChecksums.parse(text), [
             "Proxi-macos.zip": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
             "hello.txt": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
         ])
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("checksum-\(UUID().uuidString).bin")
         try Data("hello\n".utf8).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        XCTAssertEqual(try Checksums.sha256(of: file), "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03")
+        XCTAssertEqual(try ProxiChecksums.sha256(of: file), "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03")
     }
 
     func testInstallPlan() {
