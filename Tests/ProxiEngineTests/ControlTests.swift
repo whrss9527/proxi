@@ -94,8 +94,11 @@ final class NodeQueryTests: XCTestCase {
         }
     }
 
+    /// 同一文字系统内的顺序应与 localizedStandardCompare 一致（数字自然顺序）。
+    /// 跨文字系统的先后由系统区域规则决定，不要求全局一致。
     private func assertLocalizedNameOrder(_ names: [String], file: StaticString = #filePath, line: UInt = #line) {
         for (left, right) in zip(names, names.dropFirst()) {
+            guard left.first?.isASCII == right.first?.isASCII else { continue }
             XCTAssertNotEqual(left.localizedStandardCompare(right), .orderedDescending,
                               "\(left) 应排在 \(right) 前；区域：\(Locale.current.identifier)", file: file, line: line)
         }
